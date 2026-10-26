@@ -114,7 +114,7 @@ export const live = {
     let q = (await from('am_prices')).select('*, provider:am_providers(id,name,city,address,phone,rating,is_active)').order('price').limit(200);
     for (const w of stems(service)) q = q.ilike('service', `%${w}%`);
     if (brand) q = q.or(`brand.eq.,brand.is.null,brand.ilike.${brand}`);
-    return (must(await q) || []).filter((p) => !p.provider || p.provider.is_active);
+    return (must(await q) || []).filter((p) => !p.provider_id || p.provider?.is_active);   // цена скрытой организации не показывается
   },
   async providerPrices(pid) { return must(await (await from('am_prices')).select('*').eq('provider_id', pid).order('service')); },
   async addPrice(x) { return must(await (await from('am_prices')).insert({ ...x, price: +x.price })); },
