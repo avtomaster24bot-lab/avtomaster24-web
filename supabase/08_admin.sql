@@ -224,7 +224,7 @@ end $$;
 create or replace function am_staff_remove(p_provider int, p_user uuid) returns void
 language plpgsql security definer set search_path = public as $$
 begin
-  if not (am_staff_role(p_provider) = 'owner' or (p_user = auth.uid() and am_staff_role(p_provider) in ('manager','master'))) then raise exception 'Нет прав'; end if;
+  if not coalesce(am_staff_role(p_provider) = 'owner' or (p_user = auth.uid() and am_staff_role(p_provider) in ('manager','master')), false) then raise exception 'Нет прав'; end if;
   delete from am_provider_staff where provider_id = p_provider and user_id = p_user;
   update am_requests set assigned_to = null where accepted_by = p_provider and assigned_to = p_user and status not in ('completed','cancelled');
   perform am_log('staff_remove', p_user, am_provider_city(p_provider), jsonb_build_object('provider', p_provider));
@@ -232,7 +232,7 @@ end $$;
 create or replace function am_staff_list(p_provider int) returns table(user_id uuid, username text, full_name text, role text, created_at timestamptz, handled bigint)
 language plpgsql security definer set search_path = public as $$
 begin
-  if am_staff_role(p_provider) not in ('owner','manager') and not am_is_admin(am_provider_city(p_provider)) then raise exception 'Нет прав'; end if;
+  if not coalesce(am_staff_role(p_provider) in ('owner','manager'), false) and not coalesce(am_is_admin(am_provider_city(p_provider)), false) then raise exception 'Нет прав'; end if;
   return query
     select o.owner_id, pr.username, pr.full_name, 'owner'::text, o.created_at, (select count(*) from am_requests r where r.accepted_by = o.id and r.handled_by = o.owner_id)
       from am_providers o join am_profiles pr on pr.id = o.owner_id where o.id = p_provider
@@ -258,7 +258,7 @@ language plpgsql security definer set search_path = public as $$
 declare r am_requests;
 begin
   select * into r from am_requests where id = p_id;
-  if not found or not (am_staff_role(r.accepted_by) in ('owner','manager','master') or am_is_admin(r.city)) then raise exception 'Нет прав'; end if;
+  if not found or not coalesce(am_staff_role(r.accepted_by) in ('owner','manager','master') or am_is_admin(r.city), false) then raise exception 'Нет прав'; end if;
   return query select (select coalesce(nullif(full_name, ''), username) from am_profiles where id = r.handled_by),
                       (select coalesce(nullif(full_name, ''), username) from am_profiles where id = r.assigned_to), r.assigned_to;
 end $$;
@@ -269,7 +269,7 @@ language plpgsql security definer set search_path = public as $$
 declare r am_requests;
 begin
   select * into r from am_requests where id = p_id for update;
-  if not found or r.accepted_by is null or am_staff_role(r.accepted_by) not in ('owner','manager') then raise exception 'Нет прав'; end if;
+  if not found or r.accepted_by is null or not coalesce(am_staff_role(r.accepted_by) in ('owner','manager'), false) then raise exception 'Нет прав'; end if;
   if r.status in ('completed','cancelled') then raise exception 'Заявка закрыта'; end if;
   if p_user is not null and not exists (select 1 from am_provider_staff where provider_id = r.accepted_by and user_id = p_user)
      and p_user <> (select owner_id from am_providers where id = r.accepted_by) then raise exception 'Это не сотрудник организации'; end if;
@@ -385,8 +385,8 @@ language plpgsql security definer set search_path = public as $$
 declare r am_requests;
 begin
   select * into r from am_requests where id = p_id;
-  if not found or not (am_staff_role(r.accepted_by) in ('owner','manager') or (r.assigned_to = auth.uid() and am_staff_role(r.accepted_by) = 'master')
-                       or am_is_admin(r.city)) then raise exception 'Контакт доступен после принятия заявки'; end if;
+  if not found or not coalesce(am_staff_role(r.accepted_by) in ('owner','manager') or (r.assigned_to = auth.uid() and am_staff_role(r.accepted_by) = 'master')
+                       or am_is_admin(r.city), false) then raise exception 'Контакт доступен после принятия заявки'; end if;
   if r.type = 'wash' and r.status in ('new','price_offered') and not am_is_admin(r.city) then raise exception 'Контакт доступен после подтверждения клиентом'; end if;
   return query select pr.full_name, pr.phone, pr.username from am_profiles pr where pr.id = r.user_id;
 end $$;
@@ -396,7 +396,7 @@ language plpgsql security definer set search_path = public as $$
 declare rv am_reviews;
 begin
   select * into rv from am_reviews where id = p_id;
-  if not found or not (am_staff_role(rv.provider_id) in ('owner','manager') or am_is_admin(am_provider_city(rv.provider_id))) then raise exception 'Нет прав'; end if;
+  if not found or not coalesce(am_staff_role(rv.provider_id) in ('owner','manager') or am_is_admin(am_provider_city(rv.provider_id)), false) then raise exception 'Нет прав'; end if;
   update am_reviews set reply = nullif(left(trim(coalesce(p_text,'')), 1000), ''), reply_at = now() where id = p_id;
 end $$;
 revoke execute on function am_reply_review(bigint, text) from anon;
