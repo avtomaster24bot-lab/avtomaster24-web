@@ -50,9 +50,10 @@ const PHOTO = Buffer.from('/9j/4AAQSkZJRgABAQAAAQABAAD/2wBDAAgGBgcGBQgHBwcJCQgKD
   }
   await ok('админ ставит «Проверен» СТО 1', async () => { must(await A.from('am_providers').update({ verified: true }).eq('id', P.test_sto_1.id)); });
   await ok('владелец не может сам поднять рейтинг/«Проверен»', async () => {
-    must(await U.test_sto_2.from('am_providers').update({ verified: true, rating: 5, about: 'ТЕСТ: о нас', whatsapp: '+77000000098' }).eq('id', P.test_sto_2.id));
+    const before = must(await U.test_sto_2.from('am_providers').select('rating,reviews_count').eq('id', P.test_sto_2.id).single());
+    must(await U.test_sto_2.from('am_providers').update({ verified: true, rating: 1.23, reviews_count: 999, about: 'ТЕСТ: о нас', whatsapp: '+77000000098' }).eq('id', P.test_sto_2.id));
     const p = must(await U.test_sto_2.from('am_providers').select('*').eq('id', P.test_sto_2.id).single());
-    assert(!p.verified && +p.rating === 0 && p.about === 'ТЕСТ: о нас', JSON.stringify({ v: p.verified, r: p.rating, a: p.about }));
+    assert(!p.verified && +p.rating === +before.rating && p.reviews_count === before.reviews_count && p.about === 'ТЕСТ: о нас', JSON.stringify({ v: p.verified, r: p.rating, n: p.reviews_count, a: p.about }));
   });
 
   // ---------- каталог: изоляция тестовых ----------
