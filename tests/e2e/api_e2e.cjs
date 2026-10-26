@@ -103,7 +103,7 @@ const PHOTO = Buffer.from('/9j/4AAQSkZJRgABAQAAAQABAAD/2wBDAAgGBgcGBQgHBwcJCQgKD
       const t = setTimeout(() => rej(new Error('сообщение не пришло по realtime за 15 с')), 15000);
       C.realtime.setAuth(C.session.access_token);
       const ch = C.channel('e2e-' + r1).on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'am_messages', filter: `request_id=eq.${r1}` }, (p) => { if (p.new.body === 'ТЕСТ: Выезжаю') { clearTimeout(t); ch.unsubscribe(); res(); } })
-        .subscribe(async (st) => { if (st === 'SUBSCRIBED') { await rpc(U.test_sto_1, 'am_send_message', { p_id: r1, p_body: 'ТЕСТ: Выезжаю' }); } });
+        .subscribe(async (st) => { if (st === 'SUBSCRIBED') { await new Promise((z) => setTimeout(z, 2500)); await rpc(U.test_sto_1, 'am_send_message', { p_id: r1, p_body: 'ТЕСТ: Выезжаю' }); } });
     });
     await got;
     await rpc(C, 'am_send_message', { p_id: r1, p_body: 'ТЕСТ: Жду, спасибо' });

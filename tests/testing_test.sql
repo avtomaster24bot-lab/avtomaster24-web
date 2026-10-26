@@ -48,6 +48,20 @@ do $$ declare pid int := (select id from am_providers where owner_id = '00000000
   raise notice 'OK реальное СТО не видит тестовые заявки'; end $$;
 reset role; set role anon; select pg_temp.as_user(null);
 select 'прозрачность без тестов: ' || ((am_transparency()->>'providers_active')::int = (select count(*) from am_providers where is_active and not is_test));
+-- цена и отзыв тестовой организации не видны гостю; рейтинг пересчитывается от имени клиента
+reset role;
+insert into am_prices(provider_id, service, price) select id, 'ТЕСТ цена', 100 from am_providers where name = 'ТЕСТ СТО изоляция';
+set role authenticated; select pg_temp.as_user('00000000-0000-0000-0000-000000000102');
+select am_accept_request((select id from am_requests where description = 'ТЕСТ заявка'), (select id from am_providers where name = 'ТЕСТ СТО изоляция'));
+select am_complete_request((select id from am_requests where description = 'ТЕСТ заявка'), (select id from am_providers where name = 'ТЕСТ СТО изоляция'), 100);
+select pg_temp.as_user('00000000-0000-0000-0000-000000000101');
+select am_leave_review((select id from am_requests where description = 'ТЕСТ заявка'), 4, '');
+do $$ begin if (select reviews_count from am_providers where name = 'ТЕСТ СТО изоляция') <> 1 then raise exception 'FAIL рейтинг не пересчитан'; end if; raise notice 'OK рейтинг пересчитан'; end $$;
+reset role; set role anon; select pg_temp.as_user(null);
+do $$ begin if exists (select 1 from am_prices where service = 'ТЕСТ цена') then raise exception 'FAIL гость видит тестовую цену'; end if;
+  if exists (select 1 from am_reviews r where r.provider_id = (select id from am_providers where name = 'ТЕСТ СТО изоляция')) then raise exception 'FAIL гость видит тестовый отзыв'; end if;
+  raise notice 'OK гость не видит тестовые цены и отзывы'; end $$;
+reset role; set role authenticated;
 -- удаление аккаунта владельцем организации: организация отключается и отвязывается
 select pg_temp.as_user('00000000-0000-0000-0000-000000000102');
 select am_delete_my_account('test');

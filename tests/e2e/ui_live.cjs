@@ -47,7 +47,8 @@ const step = async (name, fn) => { try { await fn(); pass++; console.log('OK  ',
     await pc.waitForSelector('.photos img'); await pc.screenshot({ path: OUT + 'live5-request.png', fullPage: true });
   });
   await step('исполнитель: уведомление о новой заявке (бейдж + всплывашка)', async () => {
-    await pm.waitForSelector('#nav [data-nav="cabinet"] .nbadge, .toast.link', { timeout: 30000 });
+    await pm.waitForSelector('.toast.link', { timeout: 30000 });
+    await pm.waitForSelector(`[data-acc="${rid}"]`, { timeout: 8000 });   // лента обновилась сама
     await pm.screenshot({ path: OUT + 'live5-notify-provider.png' });
   });
   await step('исполнитель видит фото и принимает', async () => {

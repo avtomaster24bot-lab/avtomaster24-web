@@ -894,6 +894,9 @@ function paintBadges() {
 }
 function notify(text, href, where) {
   N.badges[where] = (N.badges[where] || 0) + 1; paintBadges(); beep(); toast('🔔 ' + text, false, href);
+  // пользователь уже на нужном экране — сразу обновляем его, не дожидаясь автообновления
+  const route = location.hash.replace(/^#\/?/, '').split(/[/?]/)[0];
+  if (((where === 'cabinet' && route === 'cabinet') || (where === 'requests' && ['requests', 'request'].includes(route))) && !document.activeElement?.closest('form')) render();
   if (document.hidden && 'Notification' in window && Notification.permission === 'granted') {
     try { const n = new Notification('АвтоМастер24', { body: t(text), icon: 'assets/icon-192.png', tag: href, lang: isKK() ? 'kk' : 'ru' }); n.onclick = () => { window.focus(); location.hash = href; n.close(); }; } catch { /* ignore */ }
   }

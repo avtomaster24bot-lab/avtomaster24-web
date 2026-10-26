@@ -2,11 +2,13 @@
 // AM24_CREDS — путь к JSON {users:{test_client_1:{email,password}, ...}} (по умолчанию /workspace/am24-private/test-creds.json)
 const fs = require('fs'); const path = require('path');
 const { createClient } = require('@supabase/supabase-js');
+let WS; try { WS = globalThis.WebSocket || require('ws'); } catch { WS = undefined; }
+const RT = WS ? { realtime: { transport: WS } } : {};
 const cfg = fs.readFileSync(path.join(__dirname, '../../site/js/config.js'), 'utf8');
 const URL_ = cfg.match(/SUPABASE_URL:\s*'([^']+)'/)[1];
 const ANON = cfg.match(/SUPABASE_ANON_KEY:\s*'([^']+)'/)[1];
 const CREDS = JSON.parse(fs.readFileSync(process.env.AM24_CREDS || '/workspace/am24-private/test-creds.json', 'utf8')).users;
-const mk = () => createClient(URL_, ANON, { auth: { persistSession: false, autoRefreshToken: false } });
+const mk = () => createClient(URL_, ANON, { ...RT, auth: { persistSession: false, autoRefreshToken: false } });
 // Сессии кэшируются в файле рядом с паролями (лимит Supabase на входы ~30 за 5 минут с одного IP)
 const SESS_FILE = (process.env.AM24_CREDS || '/workspace/am24-private/test-creds.json').replace(/[^/]+$/, 'sessions.json');
 const sessCache = () => { try { return JSON.parse(fs.readFileSync(SESS_FILE, 'utf8')); } catch { return {}; } };
@@ -20,7 +22,7 @@ async function session(name) {
 }
 async function login(name) {
   const sess = await session(name);
-  const s = createClient(URL_, ANON, { auth: { persistSession: false, autoRefreshToken: false }, global: { headers: { Authorization: `Bearer ${sess.access_token}` } } });
+  const s = createClient(URL_, ANON, { ...RT, auth: { persistSession: false, autoRefreshToken: false }, global: { headers: { Authorization: `Bearer ${sess.access_token}` } } });
   s.realtime.setAuth(sess.access_token);
   s.uid = sess.user.id; s.session = sess; s.name = name; return s;
 }
