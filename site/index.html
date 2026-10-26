@@ -21,23 +21,26 @@
 <link rel="apple-touch-icon" href="assets/icon-180.png">
 <meta name="apple-mobile-web-app-capable" content="yes"><meta name="mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-title" content="АвтоМастер24">
-<link rel="preconnect" href="https://fonts.googleapis.com"><link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link href="https://fonts.googleapis.com/css2?family=Manrope:wght@400;500;600;700;800&family=JetBrains+Mono:wght@500&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="assets/fonts/fonts.css">
 <link rel="stylesheet" href="css/style.css">
 <script>try{var t=localStorage.getItem('am24-theme')||(matchMedia('(prefers-color-scheme: light)').matches?'light':'dark');document.documentElement.dataset.theme=t}catch(e){}</script>
 <script type="application/ld+json">{"@context":"https://schema.org","@type":"WebApplication","name":"АвтоМастер24","url":"https://avtomaster24bot-lab.github.io/avtomaster24-web/","applicationCategory":"LifestyleApplication","operatingSystem":"Web","inLanguage":"ru","areaServed":"KZ","offers":{"@type":"Offer","price":"0","priceCurrency":"KZT"},"description":"Заявки в СТО, эвакуатор, автомойку, магазины запчастей и выездным мастерам."}</script>
-<script src="https://telegram.org/js/telegram-web-app.js" defer></script>
+<!-- Скрипт Telegram подключается только внутри Telegram (Mini App), чтобы не передавать данные посетителей сайта третьим лицам -->
+<script>try{if(/tgWebApp/.test(location.hash+location.search)||window.TelegramWebviewProxy){var s=document.createElement('script');s.src='https://telegram.org/js/telegram-web-app.js';document.head.appendChild(s)}}catch(e){}</script>
+<script>try{var l=localStorage.getItem('am24-lang');if(l==='kk')document.documentElement.lang='kk'}catch(e){}</script>
 </head>
 <body>
 <a class="skip" href="#view">К содержимому</a>
 <header class="top">
   <a href="#/" class="logo" aria-label="АвтоМастер24 — на главную"><img src="assets/favicon.svg" alt=""><span>АВТОМАСТЕР<b>24</b></span></a>
   <select id="citySel" aria-label="Город"></select>
+  <button id="langBtn" class="iconbtn lang" type="button" aria-label="Тіл / Язык: Қазақша">ҚАЗ</button>
   <button id="themeBtn" class="iconbtn" type="button" aria-label="Сменить тему">☀️</button>
   <a href="#/profile" id="meChip" class="chip">Войти</a>
 </header>
 <div id="demoBar" class="demobar" hidden></div>
 <main id="view" tabindex="-1"><div class="sk-wrap" aria-busy="true"><div class="sk sk-h"></div><div class="sk sk-c"></div><div class="sk sk-c"></div></div></main>
+<footer id="foot" class="foot"><nav aria-label="Документы"><a href="legal/privacy.html">Политика конфиденциальности</a><a href="legal/terms.html">Пользовательское соглашение</a><a href="legal/contacts.html">Контакты и реквизиты</a><a href="legal/kk/privacy.html" lang="kk">Қазақша</a></nav></footer>
 <nav class="bottom" id="nav" aria-label="Основное меню"></nav>
 <div id="toast" class="toast" role="status" aria-live="polite" hidden></div>
 <script type="module" src="js/app.js"></script>

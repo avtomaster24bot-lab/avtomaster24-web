@@ -4,6 +4,6 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 DB=am24_test
 sudo -u postgres dropdb --if-exists $DB; sudo -u postgres createdb $DB
-for f in tests/local_shim.sql supabase/01_schema.sql supabase/02_seed.sql supabase/01_schema.sql supabase/03_features.sql tests/flow_test.sql supabase/03_features.sql tests/features_test.sql; do
+for f in tests/local_shim.sql supabase/01_schema.sql supabase/02_seed.sql supabase/01_schema.sql supabase/03_features.sql tests/flow_test.sql supabase/03_features.sql tests/features_test.sql supabase/04_legal.sql tests/legal_test.sql supabase/04_legal.sql; do
   cp "$f" /tmp/am24_$(basename "$f"); sudo -u postgres env PGOPTIONS="-c client_min_messages=notice" psql -q -t -A -v ON_ERROR_STOP=1 -d $DB -f /tmp/am24_$(basename "$f") | grep -v '^$' || true
 done

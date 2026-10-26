@@ -1,5 +1,6 @@
 import { CONFIG } from './config.js';
 import { api, IS_DEMO } from './api.js';
+import { t, isKK, LANG, initI18n, setLang, translateLink } from './i18n.js';
 import { KINDS, URGENT, SUPPLIER, TOW_VEHICLES, WHEELS, WASH_SERVICES, CAR_TYPES, PARTS_URGENCY, PARTS_ORIG, PARTS_DELIVERY, STATUS, effStatus } from './consts.js';
 
 // ------------------------------------------------------------ утилиты
@@ -18,7 +19,7 @@ const tip = (t) => `<button type="button" class="tip" aria-label="Подсказ
 const opts = (name, list, sel, type = 'radio') => `<div class="opts">${list.map(([v, t]) => `<label class="opt"><input type="${type}" name="${name}" value="${esc(v)}" ${(Array.isArray(sel) ? sel.includes(v) : sel === v) ? 'checked' : ''}><span>${esc(t)}</span></label>`).join('')}</div>`;
 const pairs = (arr) => arr.map((x) => [x, x]);
 const mapUrl = (city, address) => `https://2gis.kz/search/${encodeURIComponent([city, address].filter(Boolean).join(', '))}`;
-function toast(msg, err = false) { const t = $('#toast'); t.textContent = msg; t.className = 'toast' + (err ? ' err' : ''); t.hidden = false; clearTimeout(t._h); t._h = setTimeout(() => { t.hidden = true; }, 3500); }
+function toast(msg, err = false) { const el = $('#toast'); el.textContent = t(msg); el.className = 'toast' + (err ? ' err' : ''); el.hidden = false; clearTimeout(el._h); el._h = setTimeout(() => { el.hidden = true; }, 3500); }
 const formData = (f) => { const o = {}; for (const [k, v] of new FormData(f)) { if (v instanceof File) continue; o[k] = o[k] !== undefined ? [].concat(o[k], v) : v; } return o; };
 async function act(btn, fn, okMsg) {
   if (btn) btn.disabled = true;
@@ -68,7 +69,7 @@ function lightbox(src) {
 }
 
 // ------------------------------------------------------------ состояние
-const S = { ref: null, me: null, city: localStorage.getItem('am24-city') || CONFIG.DEFAULT_CITY, myProv: [], timer: null, caps: { v3: false }, cleanups: [], installEvt: null };
+const S = { ref: null, me: null, city: localStorage.getItem('am24-city') || CONFIG.DEFAULT_CITY, myProv: [], timer: null, caps: { v3: false, v4: false }, cleanups: [], installEvt: null };
 const isAdmin = () => ['global_admin', 'regional_admin'].includes(S.me?.role);
 const catName = (id) => S.ref.categories.find((c) => c.id === +id)?.name || '';
 const siteUrl = () => location.origin + location.pathname;
@@ -77,11 +78,13 @@ async function boot() {
   try { window.Telegram?.WebApp?.ready(); window.Telegram?.WebApp?.expand(); } catch { /* ignore */ }
   applyTheme(localStorage.getItem('am24-theme') || (matchMedia('(prefers-color-scheme: light)').matches ? 'light' : 'dark'));
   S.ref = await api.ref();
-  try { S.caps = await api.caps(); } catch { S.caps = { v3: false }; }
+  try { S.caps = await api.caps(); } catch { S.caps = { v3: false, v4: false }; }
+  initI18n(); countVisit(); cookieNotice();
   await refreshMe();
   window.addEventListener('hashchange', () => { render(); window.scrollTo(0, 0); });
   $('#citySel').addEventListener('change', (e) => { S.city = e.target.value; localStorage.setItem('am24-city', S.city); render(); });
   $('#themeBtn').onclick = () => applyTheme(document.documentElement.dataset.theme === 'light' ? 'dark' : 'light', true);
+  $('#langBtn').onclick = () => setLang(isKK() ? 'ru' : 'kk');
   document.addEventListener('click', (e) => {
     const t = e.target.closest('.tip'); $$('.tip.open').forEach((x) => x !== t && x.classList.remove('open')); if (t) { e.preventDefault(); t.classList.toggle('open'); }
     const ph = e.target.closest('[data-full]'); if (ph) lightbox(ph.dataset.full);
@@ -114,11 +117,12 @@ function chrome(route) {
   } else bar.hidden = true;
   const items = [['', '🏠', 'Главная'], ['requests', '📋', 'Заявки'], ['catalog', '🔎', 'Мастера'],
     S.myProv.length ? ['cabinet', '🛠', 'Кабинет'] : ['garage', '🚗', 'Гараж'], isAdmin() ? ['admin', '🛡', 'Админ'] : ['profile', '👤', 'Профиль']];
-  $('#nav').innerHTML = items.map(([h, i, t]) => `<a href="#/${h}" class="${route === h ? 'on' : ''}" ${route === h ? 'aria-current="page"' : ''}><span aria-hidden="true">${i}</span>${t}</a>`).join('');
+  footer(); const lb = $('#langBtn'); lb.textContent = isKK() ? 'РУС' : 'ҚАЗ'; lb.setAttribute('aria-label', isKK() ? 'Язык: русский' : 'Тіл: қазақша'); lb.lang = isKK() ? 'ru' : 'kk';
+  $('#nav').innerHTML = items.map(([h, i, l]) => `<a href="#/${h}" class="${route === h ? 'on' : ''}" ${route === h ? 'aria-current="page"' : ''}><span aria-hidden="true">${i}</span>${t(l)}</a>`).join('');
 }
 
 // ------------------------------------------------------------ роутер
-const routes = { '': home, catalog, provider, new: newRequest, requests, request, chat, garage, prices, profile, login, business, cabinet, admin };
+const routes = { '': home, catalog, provider, new: newRequest, requests, request, chat, garage, prices, profile, login, business, cabinet, admin, complaint, transparency, consent };
 const skeleton = () => `<div class="sk-wrap" aria-busy="true" aria-label="Загрузка"><div class="sk sk-h"></div><div class="sk sk-c"></div><div class="sk sk-c"></div><div class="sk sk-c short"></div></div>`;
 let renderSeq = 0;
 async function render() {
@@ -127,7 +131,8 @@ async function render() {
   const [path, qs] = location.hash.replace(/^#\/?/, '').split('?');
   const [name, arg] = path.split('/');
   const q = Object.fromEntries(new URLSearchParams(qs || ''));
-  const fn = routes[name] || home;
+  const gated = ['new', 'requests', 'request', 'chat', 'garage', 'business', 'cabinet'];
+  const fn = needsConsent() && gated.includes(name) ? consent : (routes[name] || home);
   chrome(name in routes ? name : '');
   const v = $('#view');
   const same = S.lastHash === location.hash; S.lastHash = location.hash;
@@ -172,8 +177,8 @@ async function home() {
   const favList = fv.length ? (await Promise.all(fv.slice(0, 6).map((id) => api.getProvider(id).catch(() => null)))).filter(Boolean) : [];
   const onboard = localStorage.getItem('am24-onboarded') ? '' : `<div class="card onboard" id="onb"><button class="x" id="onbX" aria-label="Скрыть">✕</button><h3>Как пользоваться — 3 шага</h3>
     <div class="steps3"><div><b>1</b>Выберите услугу или опишите проблему в поиске</div><div><b>2</b>Мастера города увидят заявку и откликнутся</div><div><b>3</b>Общайтесь в чате, после работы поставьте оценку</div></div></div>`;
-  return `<section class="hero" style="background-image:url('assets/img/hero.webp')"><div class="hero-in"><span class="eyebrow">📍 ${esc(S.city)} · бесплатно для автовладельцев</span>
-    <h1>Помощь с машиной —<br>за пару минут</h1><p>${esc(CONFIG.SITE_TAGLINE)}. Опишите, что случилось, — мастера откликнутся сами.</p>
+  return `<section class="hero" style="background-image:url('assets/img/hero.webp')"><div class="hero-in"><span class="eyebrow">📍 ${esc(S.city)} · ${L('бесплатно для автовладельцев', 'көлік иелері үшін тегін')}</span>
+    <h1>Помощь с машиной —<br>за пару минут</h1><p>${L(`${esc(CONFIG.SITE_TAGLINE)}. Опишите, что случилось, — мастера откликнутся сами.`, 'ҚКС, эвакуатор, жуу, қосалқы бөлшектер және шығатын шеберлер — бір жерде. Не болғанын сипаттаңыз — шеберлер өздері жауап береді.')}</p>
     <div class="search" role="search"><input id="q" type="search" placeholder="Например: стучит подвеска, сел аккумулятор, нужна мойка" aria-label="Что случилось с машиной?" autocomplete="off"><div id="sugg" class="sugg" role="listbox"></div></div>
     <div class="row"><a class="btn p" href="#/new/sto">🆕 Новая заявка</a><a class="btn" href="#/catalog/sto">🔎 Выбрать мастера</a><a class="btn" href="#/prices">💰 Цены</a></div></div></section>
   ${onboard}
@@ -269,13 +274,16 @@ async function provider(id) {
     <dl class="kv">${p.address ? `<dt>Адрес</dt><dd>${esc(p.address)} · <a href="${mapUrl(p.city, p.address)}" target="_blank" rel="noopener">на карте 2ГИС</a></dd>` : ''}<dt>Город</dt><dd>${esc(p.city)}</dd>${p.working_hours ? `<dt>Часы</dt><dd>${esc(p.working_hours)}</dd>` : ''}</dl>
     ${provSpec(p)}
     <div class="row" style="margin-top:12px"><a class="btn p" href="#/new/${p.kind}?to=${p.id}">📝 Оставить заявку</a>${tel(p.phone)}${wa(p.whatsapp, 'Здравствуйте! Нашёл вас на АвтоМастер24.')}
-     <button class="btn sm" id="share">🔗 Поделиться</button></div></div>
+     <button class="btn sm" id="share">🔗 Поделиться</button></div>
+    <p class="small muted" style="margin:10px 0 0">${L('АвтоМастер24 — площадка-посредник: услугу оказывает и отвечает за неё исполнитель.', 'АвтоМастер24 — делдал-алаң: қызметті орындаушы көрсетеді және оған жауап береді.')} ${S.caps.v4 ? `<a href="#/complaint?type=provider&id=${p.id}">⚑ Пожаловаться на исполнителя</a>` : ''}</p></div>
    ${pr.length ? `<div class="card"><h3>Прайс</h3><table><tr><th>Услуга</th><th>Авто</th><th>Цена</th><th></th></tr>${pr.map((x) => `<tr><td>${esc(x.service)}</td><td>${esc([x.brand, x.model].filter(Boolean).join(' ') || 'Все')}</td><td><b>${money(x.price)}</b></td><td><a class="btn sm" href="#/new/sto?to=${p.id}&sub=${encodeURIComponent(x.service)}">Записаться</a></td></tr>`).join('')}</table></div>` : ''}
    <div class="card"><h3>Отзывы</h3>
     ${pub.length ? `<div class="dist">${dist.map(([n, c]) => `<div><span>${n}★</span><i><b style="width:${pub.length ? Math.round(c / pub.length * 100) : 0}%"></b></i><span>${c}</span></div>`).join('')}</div>` : ''}
-    ${pub.map((r) => `<div class="rev"><div>${stars(r.rating)} <span class="small muted">${dt(r.created_at)}</span></div>${r.comment ? `<p>${esc(r.comment)}</p>` : ''}
-      ${r.reply ? `<div class="reply"><b>Ответ ${esc(p.name)}:</b> ${esc(r.reply)}</div>` : ''}
-      ${mine && S.caps.v3 ? `<form class="row" data-reply="${r.id}"><input name="t" class="grow" placeholder="Ответить на отзыв" value="${esc(r.reply || '')}"><button class="sm">Ответить</button></form>` : ''}</div>`).join('') || '<p class="muted">Пока нет отзывов. Оценки ставят только клиенты с выполненной заявкой.</p>'}</div>
+    ${pub.map((r) => `<div class="rev"><div>${stars(r.rating)} <span class="small muted">${dt(r.created_at)}</span></div>${r.comment ? `<p data-ugc>${esc(r.comment)}</p>` : ''}
+      ${r.reply ? `<div class="reply"><b>Ответ ${esc(p.name)}:</b> <span data-ugc>${esc(r.reply)}</span></div>` : ''}
+      <div class="rev-a small">${r.comment ? `<a href="${translateLink(r.comment)}" target="_blank" rel="noopener">${isKK() ? 'Аудару' : 'Перевести'}</a>` : ''}${S.caps.v4 ? `<a href="#/complaint?type=review&id=${r.id}">⚑ Пожаловаться</a>` : ''}</div>
+      ${mine && S.caps.v3 ? `<form class="row" data-reply="${r.id}"><input name="t" class="grow" placeholder="Ответить на отзыв" value="${esc(r.reply || '')}"><button class="sm">Ответить</button></form>` : ''}</div>`).join('') || '<p class="muted">Пока нет отзывов. Оценки ставят только клиенты с выполненной заявкой.</p>'}
+    <p class="small muted"><a href="legal/${isKK() ? 'kk/' : ''}reviews.html">Правила отзывов и модерации</a></p></div>
    <div class="card small muted">Ссылка на эту страницу: <span class="mono">${esc(url)}</span></div>`;
 }
 provider.after = (v, id) => {
@@ -289,7 +297,7 @@ async function newRequest(kind = 'sto', q) {
   if (!KINDS[kind]) kind = 'sto';
   const tabs = `<div class="tabs">${Object.entries(KINDS).map(([k, x]) => `<a href="#/new/${k}${q.to ? '' : ''}" class="${k === kind ? 'on' : ''}">${x.icon} ${x.short}</a>`).join('')}</div>`;
   if (!S.me) return `<h1>Новая заявка</h1>${tabs}${needLogin('создания заявки')}`;
-  const warn = !S.me.phone || !S.me.consent ? `<div class="notice warn">Перед первой заявкой заполните <a href="#/profile">профиль</a>: телефон и согласие на обработку данных. Телефон увидит только тот, кто возьмёт заявку.</div>` : '';
+  const warn = !S.me.phone || !S.me.consent ? `<div class="notice warn">Перед первой заявкой заполните <a href="#/profile">профиль</a>: ${S.caps.v4 ? 'телефон' : 'телефон и согласие на обработку данных'}. Телефон увидит только тот, кто возьмёт заявку.</div>` : '';
   const [provs, cars, prev] = await Promise.all([api.listProviders({ kind, city: S.city }), api.vehicles(), q.repeat ? api.myRequests().then((l) => l.find((r) => r.id === +q.repeat)) : null]);
   const R = prev || {}; const D = R.details || {};
   const car = `<label>Автомобиль ${tip('Выберите машину из гаража или впишите марку и год — так мастер сразу поймёт, о чём речь')}</label>${cars.length ? `<select name="car"><option value="">— ввести вручную —</option>${cars.map((c) => `<option>${esc(`${c.brand} ${c.model} ${c.year || ''}`.trim())}</option>`).join('')}</select>` : ''}
@@ -328,7 +336,8 @@ async function newRequest(kind = 'sto', q) {
   }
   return `<h1>${KINDS[kind].icon} ${KINDS[kind].title}</h1>${tabs}${warn}${prev ? '<div class="notice">🔁 Заполнили по прошлой заявке — проверьте и отправьте.</div>' : ''}
     <form id="reqForm" class="card" data-kind="${kind}"><div class="small muted">Город: <b>${esc(S.city)}</b> (меняется вверху)</div>${body}
-    <button class="p block" style="margin-top:16px">Отправить заявку</button><p class="small muted center" style="margin:8px 0 0">Бесплатно. Телефон увидит только тот, кто возьмёт заявку.</p></form>`;
+    <button class="p block" style="margin-top:16px">Отправить заявку</button><p class="small muted center" style="margin:8px 0 0">Бесплатно. Телефон увидит только тот, кто возьмёт заявку.</p>
+    <p class="small muted center" style="margin:4px 0 0">${L('АвтоМастер24 — посредник: договор на услугу вы заключаете с исполнителем.', 'АвтоМастер24 — делдал: қызмет шартын орындаушымен жасасасыз.')} <a href="${legal('terms')}">${L('Условия', 'Шарттар')}</a> · <a href="${legal('privacy')}">${L('Данные', 'Деректер')}</a></p></form>`;
 }
 newRequest.after = (v, kind) => {
   const f = $('#reqForm', v); if (!f) return;
@@ -467,9 +476,9 @@ async function chat(id) {
     ${r.accepted_by ? `<form class="chat-f" id="chatF"><input name="t" class="grow" placeholder="Сообщение…" autocomplete="off" maxlength="2000" aria-label="Сообщение"><button class="p" aria-label="Отправить">➤</button></form>
     <div class="quick">${(iAmClient ? ['Когда сможете?', 'Сколько будет стоить?', 'Я на месте'] : ['Выезжаю', 'Буду через 30 минут', 'Пришлите фото, пожалуйста']).map((t) => `<button type="button" class="sm" data-q="${esc(t)}">${esc(t)}</button>`).join('')}</div>`
     : '<p class="small muted">Чат откроется, когда исполнитель возьмёт заявку.</p>'}</div>
-    <p class="small muted">🔒 Переписка видна только вам и ${iAmClient ? 'исполнителю' : 'клиенту'}. Не отправляйте данные карт и коды из SMS.</p>`;
+    <p class="small muted">🔒 Переписка видна только вам и ${iAmClient ? 'исполнителю' : 'клиенту'}. Не отправляйте данные карт и коды из SMS. ${S.caps.v4 ? `<a href="#/complaint?type=message&id=${r.id}">⚑ Пожаловаться</a>` : ''}</p>`;
 }
-const msgHtml = (m, iAmClient) => { const mine = m.from_provider !== iAmClient; return `<div class="msg ${mine ? 'me' : ''}" data-mid="${m.id}"><span>${esc(m.body)}</span><small>${hm(m.created_at)}</small></div>`; };
+const msgHtml = (m, iAmClient) => { const mine = m.from_provider !== iAmClient; return `<div class="msg ${mine ? 'me' : ''}" data-mid="${m.id}"><span data-ugc>${esc(m.body)}</span><small>${hm(m.created_at)}</small></div>`; };
 chat.after = (v, id) => {
   const box = $('#msgs', v), f = $('#chatF', v); if (!box) return;
   box.scrollTop = box.scrollHeight;
@@ -527,14 +536,20 @@ prices.after = (v) => {
 // ------------------------------------------------------------ вход и профиль
 async function login() {
   if (S.me) { location.hash = '#/profile'; return ''; }
-  if (IS_DEMO) return `<h1>Вход</h1><div class="card"><p>Сайт в демо-режиме — выберите, за кого войти:</p><div class="row"><button class="p" data-demo2="client">👤 Клиент</button><button data-demo2="master">🛠 Исполнитель (СТО, мойка, эвакуатор…)</button><button data-demo2="admin">🛡 Администратор</button></div></div>`;
-  return `<h1>Вход</h1><div class="card"><p>Войдите через Telegram. Мы получаем только имя и username — телефон вы укажете сами в профиле.</p><div id="tgw"></div>
+  const pre = S.caps.v4 ? `<div id="preLegal">${consentBoxes()}</div><p class="small muted" id="preHint">Отметьте все пункты, чтобы продолжить.</p>` : '';
+  if (IS_DEMO) return `<h1>Вход</h1><div class="card"><p>Сайт в демо-режиме — выберите, за кого войти:</p>${pre}<div class="row" id="loginBtns"><button class="p" data-demo2="client">👤 Клиент</button><button data-demo2="master">🛠 Исполнитель (СТО, мойка, эвакуатор…)</button><button data-demo2="admin">🛡 Администратор</button></div></div>`;
+  return `<h1>Вход</h1><div class="card"><p>Войдите через Telegram. Мы получаем только имя и username — телефон вы укажете сами в профиле.</p>${pre}<div id="tgw" ${S.caps.v4 ? 'hidden' : ''}></div>
     <p class="small muted">Если кнопка не появилась — отключите блокировщик рекламы или откройте сайт в обычном браузере.</p></div>`;
 }
 login.after = (v) => {
-  $$('[data-demo2]', v).forEach((b) => b.onclick = async () => { await api.loginDemo(b.dataset.demo2); await refreshMe(); location.hash = b.dataset.demo2 === 'master' ? '#/cabinet' : b.dataset.demo2 === 'admin' ? '#/admin' : '#/profile'; });
-  const box = $('#tgw', v); if (!box) return;
-  window.onTelegramAuth = async (u) => { try { await api.loginTelegram(u); await refreshMe(); toast('Добро пожаловать!'); location.hash = S.me?.phone ? '#/' : '#/profile'; } catch (e) { toast(e.message, true); } };
+  const pre = $('#preLegal', v), box = $('#tgw', v), btns = $('#loginBtns', v);
+  const ok = () => !pre || consentKinds(pre).length === 4;
+  const sync = () => { if (!pre) return; const y = ok(); if (box) box.hidden = !y; if (btns) $$('button', btns).forEach((b) => { b.disabled = !y; }); $('#preHint', v).hidden = y; };
+  if (pre) { $$('input', pre).forEach((c) => c.onchange = sync); sync(); }
+  const afterLogin = async () => { if (pre && S.caps.v4) { try { S.me = await api.acceptLegal(consentKinds(pre), CONFIG.LEGAL_VERSION); } catch (e) { toast(e.message, true); } } await refreshMe(); };
+  $$('[data-demo2]', v).forEach((b) => b.onclick = async () => { if (!ok()) return; await api.loginDemo(b.dataset.demo2); await refreshMe(); await afterLogin(); location.hash = b.dataset.demo2 === 'master' ? '#/cabinet' : b.dataset.demo2 === 'admin' ? '#/admin' : '#/profile'; });
+  if (!box) return;
+  window.onTelegramAuth = async (u) => { try { await api.loginTelegram(u); await refreshMe(); await afterLogin(); toast('Добро пожаловать!'); location.hash = S.me?.phone ? '#/' : '#/profile'; } catch (e) { toast(e.message, true); } };
   const s = document.createElement('script'); s.async = true; s.src = 'https://telegram.org/js/telegram-widget.js?22';
   s.dataset.telegramLogin = CONFIG.TELEGRAM_LOGIN_BOT; s.dataset.size = 'large'; s.dataset.radius = '12'; s.dataset.onauth = 'onTelegramAuth(user)'; s.dataset.requestAccess = 'write';
   box.appendChild(s);
@@ -545,18 +560,20 @@ async function profile() {
   return `<h1>Профиль</h1><form class="card" id="prf"><label>Имя</label><input name="full_name" value="${esc(S.me.full_name || '')}" required>
     <label>Телефон (Казахстан)</label><input name="phone" type="tel" value="${esc(S.me.phone || '')}" placeholder="+7 7XX XXX XX XX">
     <label>Город</label><select name="city">${S.ref.cities.filter((c) => c.active).map((c) => `<option ${c.name === (S.me.city || S.city) ? 'selected' : ''}>${esc(c.name)}</option>`).join('')}</select>
-    <label class="check"><input type="checkbox" name="consent" ${S.me.consent ? 'checked' : ''}> <span>Согласен(на) на обработку персональных данных (имя и телефон) для передачи исполнителю, который примет мою заявку. Закон РК «О персональных данных и их защите».</span></label>
+    ${S.caps.v4 ? '' : `<label class="check"><input type="checkbox" name="consent" ${S.me.consent ? 'checked' : ''}> <span>Согласен(на) на обработку персональных данных (имя и телефон) для передачи исполнителю, который примет мою заявку. Закон РК «О персональных данных и их защите».</span></label>`}
     <button class="p" style="margin-top:12px">Сохранить</button></form>
+    ${S.caps.v4 ? await privacyCard() : ''}
     ${regs.length ? `<div class="card"><h3>Мои заявки на подключение бизнеса</h3>${regs.map((g) => `<div class="row between small"><span>${KINDS[g.kind].icon} ${esc(g.name)}</span>${badge(g.status)}</div>${g.reason ? `<div class="small muted">${esc(g.reason)}</div>` : ''}`).join('')}</div>` : ''}
     <div class="card row">${S.myProv.length ? '<a class="btn" href="#/cabinet">🛠 Кабинет исполнителя</a>' : '<a class="btn" href="#/business">💼 Подключить бизнес</a>'}${isAdmin() ? '<a class="btn" href="#/admin">🛡 Админ</a>' : ''}<a class="btn" href="#/garage">🚗 Гараж</a>
-    <button class="btn" data-install hidden>📲 Установить приложение</button><button class="danger" id="delData">Удалить мои данные</button><button class="ghost" id="logout">Выйти</button></div>`;
+    <button class="btn" data-install hidden>📲 Установить приложение</button>${S.caps.v4 ? '' : '<button class="danger" id="delData">Удалить мои данные</button>'}<button class="ghost" id="logout">Выйти</button></div>`;
 }
 profile.after = (v) => {
   const f = $('#prf', v); if (!f) return login.after(v);
-  f.onsubmit = (e) => { e.preventDefault(); const d = formData(f); act($('button', f), async () => { S.me = await api.updateProfile({ ...d, consent: !!d.consent }); S.city = d.city; localStorage.setItem('am24-city', S.city); }, 'Профиль сохранён'); };
+  f.onsubmit = (e) => { e.preventDefault(); const d = formData(f); act($('button', f), async () => { S.me = await api.updateProfile({ ...d, consent: S.caps.v4 ? !!S.me.consent : !!d.consent }); S.city = d.city; localStorage.setItem('am24-city', S.city); }, 'Профиль сохранён'); };
+  privacyAfter(v);
   installBtns(v);
   $('#logout', v).onclick = async () => { await api.logout(); await refreshMe(); location.hash = '#/'; };
-  $('#delData', v).onclick = () => { if (confirm('Удалить телефон и согласие? Заявки и отзывы сохранятся.')) act(null, async () => { await api.deleteMyData(); await refreshMe(); }, 'Данные удалены'); };
+  if ($('#delData', v)) $('#delData', v).onclick = () => { if (confirm('Удалить телефон и согласие? Заявки и отзывы сохранятся.')) act(null, async () => { await api.deleteMyData(); await refreshMe(); }, 'Данные удалены'); };
 };
 
 // ------------------------------------------------------------ подключение бизнеса
@@ -571,6 +588,7 @@ async function business() {
     <div data-k="parts" hidden><label>Тип</label>${opts('supplier_type', Object.entries(SUPPLIER), 'shop')}<label class="check"><input type="checkbox" name="delivery"> <span>Есть доставка</span></label></div>
     <div data-k="urgent" hidden><label>Специализация</label>${opts('service_type', Object.entries(URGENT), 'locksmith')}</div>
     <div data-k="wash" hidden><div class="row"><div class="grow"><label>Боксов</label><input name="boxes" type="number" min="1" value="1"></div><div class="grow"><label>Минут на машину</label><input name="slot_minutes" type="number" min="15" step="15" value="60"></div></div></div>
+    <label class="check"><input type="checkbox" name="offer" required> <span>${L(`Принимаю <a href="${legal('offer')}" target="_blank">Договор для исполнителей</a>, подтверждаю, что вправе оказывать эти услуги, и обязуюсь использовать контакты клиентов только для выполнения заявок`, `<a href="${legal('offer')}" target="_blank">Орындаушыларға арналған шартты</a> қабылдаймын, осы қызметтерді көрсетуге құқылы екенімді растаймын және клиенттердің байланыс деректерін тек өтінімдерді орындау үшін пайдалануға міндеттенемін`)}</span></label>
     <button class="p" style="margin-top:14px">Отправить на проверку</button></form>`;
 }
 business.after = (v) => {
@@ -583,7 +601,7 @@ business.after = (v) => {
     if (d.kind === 'parts') { details.supplier_type = d.supplier_type; details.delivery = !!d.delivery; }
     if (d.kind === 'urgent') details.service_type = d.service_type;
     if (d.kind === 'wash') { details.boxes = +d.boxes || 1; details.slot_minutes = +d.slot_minutes || 60; }
-    act($('button.p', f), async () => { await api.registerBusiness({ kind: d.kind, name: d.name, phone: d.phone, city: d.city, address: d.address, details }); location.hash = '#/profile'; }, 'Заявка отправлена. Администратор проверит её.'); };
+    act($('button.p', f), async () => { if (S.caps.v4) await api.acceptLegal(['provider_offer'], CONFIG.LEGAL_VERSION); await api.registerBusiness({ kind: d.kind, name: d.name, phone: d.phone, city: d.city, address: d.address, details }); location.hash = '#/profile'; }, 'Заявка отправлена. Администратор проверит её.'); };
 };
 
 // ------------------------------------------------------------ кабинет исполнителя
@@ -686,7 +704,7 @@ cabinet.after = (v, _, q) => {
 async function admin(_, q) {
   if (!isAdmin()) return `<h1>Админ-панель</h1>${S.me ? '<div class="card">Нет доступа. Админа назначают в базе (см. README).</div>' : needLogin('админ-панели')}`;
   const tab = q.t || 'stats';
-  const head = `<h1>🛡 Админ-панель</h1><div class="tabs">${[['stats', '📊 Статистика'], ['regs', '🗂 Регистрации'], ['reqs', '📋 Заявки'], ['reviews', '⭐ Отзывы'], ['provs', '🏢 Исполнители'], ['cities', '🏙 Города']].map(([t, n]) => `<a href="#/admin?t=${t}" class="${t === tab ? 'on' : ''}">${n}</a>`).join('')}</div>`;
+  const head = `<h1>🛡 Админ-панель</h1><div class="tabs">${[['stats', '📊 Статистика'], ['regs', '🗂 Регистрации'], ['reqs', '📋 Заявки'], ['reviews', '⭐ Отзывы'], ['provs', '🏢 Исполнители'], ...(S.caps.v4 ? [['complaints', '⚑ Обращения']] : []), ['cities', '🏙 Города']].map(([t, n]) => `<a href="#/admin?t=${t}" class="${t === tab ? 'on' : ''}">${n}</a>`).join('')}</div>`;
   if (tab === 'stats') { const s = await api.adminStats();
     const L = { users: 'Пользователей', providers: 'Исполнителей', requests: 'Заявок всего', active: 'Активных заявок', completed: 'Выполнено', turnover: 'Оборот по выполненным', pending_regs: 'Ждут одобрения', pending_reviews: 'Отзывы на модерации' };
     return head + `<div class="grid">${Object.entries(L).map(([k, n]) => `<div class="tile"><small>${n}</small><b class="price">${k === 'turnover' ? money(s[k]) : s[k]}</b></div>`).join('')}</div>`; }
@@ -700,6 +718,7 @@ async function admin(_, q) {
     return head + (r.map((x) => `<div class="card">${stars(x.rating)} <b>${esc(x.provider_name || '')}</b><p>${esc(x.comment)}</p><div class="row"><button class="ok" data-pub="${x.id}">Опубликовать</button><button class="danger" data-rej="${x.id}">Удалить</button></div></div>`).join('') || '<div class="empty">Нет отзывов на модерации</div>'); }
   if (tab === 'provs') { const p = await api.adminProviders();
     return head + `<div class="card"><table><tr><th>Название</th><th>Тип</th><th>Город</th><th>Рейтинг</th><th></th></tr>${p.map((x) => `<tr><td><a href="#/provider/${x.id}">${esc(x.name)}</a></td><td>${KINDS[x.kind].short}</td><td>${esc(x.city)}</td><td>${Number(x.rating).toFixed(1)}</td><td class="row"><button class="sm ${x.is_active ? 'danger' : 'ok'}" data-pa="${x.id}:${x.is_active ? 0 : 1}">${x.is_active ? 'Отключить' : 'Включить'}</button>${S.caps.v3 ? `<button class="sm ${x.verified ? '' : 'ok'}" data-pv="${x.id}:${x.verified ? 0 : 1}" title="Отметка «Проверен» — после проверки документов/адреса">${x.verified ? 'Снять ✔' : '✔ Проверен'}</button>` : ''}</td></tr>`).join('')}</table></div>`; }
+  if (tab === 'complaints') return head + await adminComplaints();
   S.ref = await api.ref();
   return head + `<div class="card"><table>${S.ref.cities.map((c) => `<tr><td>${esc(c.name)}</td><td class="small muted">${esc(c.region || '')}</td><td><button class="${c.active ? 'danger' : 'ok'}" data-ca="${c.id}:${c.active ? 0 : 1}">${c.active ? 'Скрыть' : 'Показать'}</button></td></tr>`).join('')}</table>
     <form class="row" id="cityForm" style="margin-top:10px"><input name="name" class="grow" placeholder="Новый город" required><button class="p">Добавить</button></form></div>`;
@@ -712,7 +731,125 @@ admin.after = (v) => {
   $$('[data-pa]', v).forEach((b) => b.onclick = () => { const [id, on] = b.dataset.pa.split(':'); act(b, () => api.setProviderActive(+id, on === '1'), 'Готово'); });
   $$('[data-pv]', v).forEach((b) => b.onclick = () => { const [id, on] = b.dataset.pv.split(':'); act(b, () => api.setProviderVerified(+id, on === '1'), on === '1' ? 'Отмечен как проверенный' : 'Отметка снята'); });
   $$('[data-ca]', v).forEach((b) => b.onclick = () => { const [id, on] = b.dataset.ca.split(':'); act(b, async () => { await api.setCityActive(+id, on === '1'); S.ref = await api.ref(); }, 'Готово'); });
+  $$('[data-ans]', v).forEach((f) => f.onsubmit = (e) => { e.preventDefault(); const d = formData(f); act($('button', f), () => api.answerComplaint(+f.dataset.ans, d.status, d.answer), 'Ответ сохранён'); });
   const cf = $('#cityForm', v); if (cf) cf.onsubmit = (e) => { e.preventDefault(); act($('button', cf), async () => { await api.addCity(cf.querySelector('[name=name]').value.trim()); S.ref = await api.ref(); }, 'Город добавлен'); };
 };
+
+// ------------------------------------------------------------ правовое (Обновление 4)
+const L = (ru, kk) => (isKK() ? kk : ru);
+const legal = (doc) => `legal/${isKK() ? 'kk/' : ''}${doc}.html`;
+const needsConsent = () => !!(S.me && S.caps.v4 && S.me.legal_version !== CONFIG.LEGAL_VERSION);
+// отдельные согласия — галочки НЕ отмечены заранее (ст. 7, 8, 16 Закона РК о ПД; ст. 10 Закона об онлайн-платформах)
+const consentBoxes = () => `<div class="consents">
+  <label class="check"><input type="checkbox" data-kind="pd"> <span>${L(`Я ознакомлен(а) с <a href="${legal('privacy')}" target="_blank">Политикой конфиденциальности</a> и даю согласие на сбор и обработку моих персональных данных (имя и username Telegram, телефон, город, данные авто и заявок) в целях работы сервиса, в том числе на передачу контактов исполнителю, который примет мою заявку`,
+    `<a href="${legal('privacy')}" target="_blank">Құпиялылық саясатымен</a> таныстым және сервис жұмысы мақсатында дербес деректерімді (Telegram аты мен username, телефон, қала, көлік және өтінім деректері) жинауға және өңдеуге, оның ішінде байланыс деректерімді өтінімімді қабылдаған орындаушыға беруге келісім беремін`)}</span></label>
+  <label class="check"><input type="checkbox" data-kind="cross_border"> <span>${L('Согласен(на) на трансграничную передачу данных обработчикам, указанным в разделе 4 Политики (вход через Telegram, хостинг сайта)', 'Деректерді Саясаттың 4-бөлімінде көрсетілген өңдеушілерге (Telegram арқылы кіру, сайт хостингі) трансшекаралық беруге келісемін')}</span></label>
+  <label class="check"><input type="checkbox" data-kind="terms"> <span>${L(`Принимаю <a href="${legal('terms')}" target="_blank">Пользовательское соглашение и правила платформы</a>`, `<a href="${legal('terms')}" target="_blank">Пайдаланушы келісімі мен платформа ережелерін</a> қабылдаймын`)}</span></label>
+  <label class="check"><input type="checkbox" data-kind="age18"> <span>${L('Мне исполнилось 18 лет', 'Маған 18 жас толды')}</span></label></div>`;
+const consentKinds = (root) => $$('input[data-kind]:checked', root).map((c) => c.dataset.kind);
+async function consent() {
+  return `<h1>Согласия и документы</h1><div class="card"><p>${S.me?.legal_version ? L('Документы обновились — пожалуйста, ознакомьтесь и подтвердите.', 'Құжаттар жаңартылды — танысып, растаңыз.') : L('Перед началом работы подтвердите согласия. Без них сервис не может передать вашу заявку исполнителю.', 'Жұмысты бастамас бұрын келісімдерді растаңыз. Оларсыз сервис өтініміңізді орындаушыға бере алмайды.')}</p>
+    ${consentBoxes()}<div class="row" style="margin-top:12px"><button class="p" id="cOk" disabled>Принять и продолжить</button><button class="ghost" id="cNo">Отказаться и выйти</button></div>
+    <p class="small muted">${L('Согласие можно отозвать в любой момент в Профиле. Журнал согласий хранит дату, время и версию документов', 'Келісімді Профильде кез келген уақытта кері қайтаруға болады. Келісімдер журналы күнді, уақытты және құжаттар нұсқасын сақтайды')} (${esc(CONFIG.LEGAL_VERSION)}).</p></div>`;
+}
+consent.after = (v) => {
+  const ok = $('#cOk', v); if (!ok) return;
+  $$('input[data-kind]', v).forEach((c) => c.onchange = () => { ok.disabled = consentKinds(v).length !== 4; });
+  ok.onclick = () => act(ok, async () => { S.me = await api.acceptLegal(consentKinds(v), CONFIG.LEGAL_VERSION); }, 'Спасибо! Согласия сохранены');
+  $('#cNo', v).onclick = async () => { await api.logout(); await refreshMe(); location.hash = '#/'; };
+};
+
+const CTYPES = { review: 'Отзыв', provider: 'Исполнитель', request: 'Заявка', message: 'Сообщение в чате', platform: 'Работа сайта', personal_data: 'Мои персональные данные', false_info: 'Недостоверная информация обо мне', appeal: 'Апелляция на решение модератора', other: 'Другое' };
+const CREASONS = ['Оскорбление или нецензурная лексика', 'Недостоверная информация', 'Чужие персональные данные', 'Мошенничество', 'Спам или реклама', 'Противоправный контент', 'Качество услуги', 'Другое'];
+const CSTATUS = { new: ['Новое', 'blue'], in_review: ['На рассмотрении', 'gold'], resolved: ['Решено', 'green'], rejected: ['Отклонено', 'grey'] };
+const cbadge = (st) => { const [x, c] = CSTATUS[st] || [st, 'grey']; return `<span class="badge ${c}">${esc(x)}</span>`; };
+const dOnly = (s) => new Date(s).toLocaleDateString(isKK() ? 'kk-KZ' : 'ru-RU', { day: 'numeric', month: 'long', year: 'numeric' });
+async function complaint(_, q) {
+  if (!S.caps.v4) return `<h1>Обращение</h1><div class="card"><p>Онлайн-форма обращений скоро заработает. Пока напишите нам — контакты на странице <a href="${legal('contacts')}">«Контакты и реквизиты»</a>.</p></div>`;
+  const type = CTYPES[q.type] ? q.type : 'platform';
+  return `<h1>⚑ Жалоба / обращение</h1><form class="card" id="cmpF">
+    <p class="small muted">${L('Номер обращения присваивается сразу. Мотивированный ответ — в течение 20 календарных дней (ст. 11 Закона РК «Об онлайн-платформах и онлайн-рекламе»).', 'Өтініш нөмірі бірден беріледі. Дәлелді жауап — 20 күнтізбелік күн ішінде («Онлайн-платформалар және онлайн-жарнама туралы» ҚР Заңының 11-бабы).')}</p>
+    <label>Тема</label><select name="type">${Object.entries(CTYPES).map(([k, x]) => `<option value="${k}" ${k === type ? 'selected' : ''}>${esc(x)}</option>`).join('')}</select>
+    ${q.id ? `<input type="hidden" name="target" value="${esc(q.id)}"><p class="small">Объект: <span class="mono">${esc(CTYPES[type] || '')} #${esc(q.id)}</span></p>` : ''}
+    <label>Причина</label><select name="reason">${CREASONS.map((x) => `<option>${esc(x)}</option>`).join('')}</select>
+    <label>Опишите суть</label><textarea name="body" rows="4" required minlength="5" maxlength="3000" placeholder="Что произошло и что вы просите сделать"></textarea>
+    <label>${L('Контакт для ответа', 'Жауапқа арналған байланыс')} ${S.me ? L('(необязательно — ответ придёт в Профиль)', '(міндетті емес — жауап Профильге келеді)') : ''}</label><input name="contact" ${S.me ? '' : 'required'} maxlength="120" placeholder="Телефон, e-mail или @Telegram">
+    ${S.me ? '' : `<label class="check"><input type="checkbox" required> <span>${L('Согласен(на) на обработку указанного контакта для ответа на обращение', 'Көрсетілген байланысты өтінішке жауап беру үшін өңдеуге келісемін')} (<a href="${legal('privacy')}" target="_blank">${L('Политика', 'Саясат')}</a>)</span></label>`}
+    <button class="p" style="margin-top:12px">Отправить</button></form>
+    <p class="small muted">${L('Также можно обратиться в уполномоченные органы — см.', 'Уәкілетті органдарға да жүгінуге болады — қараңыз:')} <a href="${legal('contacts')}">${L('Контакты и реквизиты', 'Байланыс және деректемелер')}</a>.</p>`;
+}
+complaint.after = (v) => {
+  const f = $('#cmpF', v); if (!f) return;
+  f.onsubmit = async (e) => { e.preventDefault(); const d = formData(f); const b = $('button.p', f); b.disabled = true;
+    try {
+      const r = await api.submitComplaint({ type: d.type, target: d.target || '', reason: d.reason, body: d.body, contact: d.contact || '', lang: LANG });
+      v.innerHTML = `<div class="card center"><div class="big-i">✅</div><h2>${t('Обращение')} № ${r.id}</h2><p>${L('Принято', 'Қабылданды')}: ${dt(r.created_at)}.<br>${L('Мотивированный ответ — до', 'Дәлелді жауап мерзімі —')} <b>${dOnly(r.due_at)}</b>.</p>
+        <p class="small muted">${S.me ? L('Статус и ответ — в Профиле, раздел «Мои обращения».', 'Мәртебесі мен жауабы — Профильде, «Менің өтініштерім» бөлімінде.') : L('Ответ придёт на указанный контакт.', 'Жауап көрсетілген байланысқа келеді.')}</p><a class="btn" href="#/">На главную</a></div>`;
+    } catch (er) { toast(er.message, true); b.disabled = false; }
+  };
+};
+
+async function privacyCard() {
+  const my = await api.myComplaints(S.me.id).catch(() => []);
+  return `<div class="card" id="privacy"><h3>🔒 Мои данные и согласия</h3>
+    <p class="small">${S.me.consent && S.me.legal_version ? `${L('Согласия приняты (редакция документов', 'Келісімдер қабылданды (құжаттар редакциясы')} ${esc(S.me.legal_version)}${S.me.consent_at ? ', ' + dt(S.me.consent_at) : ''}).` : L('<b>Согласие не дано</b> — создавать заявки нельзя. <a href="#/new">Дать согласие</a>', '<b>Келісім берілмеген</b> — өтінім жасау мүмкін емес. <a href="#/new">Келісім беру</a>')}
+    <a href="${legal('privacy')}">Политика</a> · <a href="${legal('terms')}">Соглашение</a></p>
+    <div class="row"><button class="btn sm" id="expData">⬇️ Скачать мои данные</button>${S.me.consent ? '<button class="btn sm" id="wdCons">Отозвать согласие</button>' : ''}<button class="danger sm" id="delAcc">Удалить аккаунт</button></div>
+    <p class="small muted">${L('Отзыв согласия удаляет телефон и останавливает обработку. Удаление аккаунта обезличивает ваши данные (ст. 24, 25 Закона РК о ПД).', 'Келісімді кері қайтару телефонды жояды және өңдеуді тоқтатады. Аккаунтты жою деректеріңізді иесіздендіреді (ДД туралы ҚР Заңының 24, 25-баптары).')}</p></div>
+    <div class="card"><h3>⚑ Мои обращения</h3>${my.length ? my.map((c) => `<div class="rev"><div class="row between"><b>№ ${c.id} · ${esc(CTYPES[c.target_type] || c.target_type)}</b>${cbadge(c.status)}</div>
+      <div class="small muted">${dt(c.created_at)} · ${L('ответ до', 'жауап мерзімі')} ${dOnly(c.due_at)}</div><p class="small" data-ugc>${esc(c.body)}</p>${c.answer ? `<div class="reply"><b>Ответ:</b> <span data-ugc>${esc(c.answer)}</span></div>` : ''}</div>`).join('') : '<p class="muted small">Обращений нет.</p>'}
+      <a class="btn sm" href="#/complaint">Подать обращение</a></div>`;
+}
+function privacyAfter(v) {
+  const ex = $('#expData', v); if (!ex) return;
+  ex.onclick = () => act(ex, async () => { const data = await api.exportMyData(); const a = document.createElement('a');
+    a.href = URL.createObjectURL(new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' })); a.download = `avtomaster24-my-data-${new Date().toISOString().slice(0, 10)}.json`; a.click(); }, 'Файл с вашими данными скачан');
+  const wd = $('#wdCons', v); if (wd) wd.onclick = () => { if (confirm(t('Отозвать согласие? Телефон будет удалён, создавать заявки будет нельзя, пока вы снова не дадите согласие.'))) act(wd, async () => { await api.withdrawConsent(); await refreshMe(); }, 'Согласие отозвано'); };
+  $('#delAcc', v).onclick = () => { if (confirm(t('Удалить аккаунт? Имя, телефон, Telegram-данные, гараж и сообщения будут удалены или обезличены. Это нельзя отменить.'))) act(null, async () => { await api.deleteAccount(); await refreshMe(); location.hash = '#/'; }, 'Аккаунт удалён'); };
+}
+
+async function adminComplaints() {
+  const list = await api.adminComplaints();
+  const open = list.filter((c) => ['new', 'in_review'].includes(c.status));
+  const row = (c) => { const late = ['new', 'in_review'].includes(c.status) && new Date(c.due_at) < new Date();
+    const link = c.target_id ? ({ review: '', provider: `#/provider/${c.target_id}`, message: `#/chat/${c.target_id}`, request: '' }[c.target_type] || '') : '';
+    return `<div class="card"><div class="row between"><b>№ ${c.id} · ${esc(CTYPES[c.target_type] || c.target_type)}${c.target_id ? ` #${esc(c.target_id)}` : ''}</b>${cbadge(c.status)}</div>
+    <div class="small ${late ? 'err-t' : 'muted'}">${dt(c.created_at)} · ответить до ${dOnly(c.due_at)}${late ? ' · ПРОСРОЧЕНО' : ''} · ${c.lang === 'kk' ? 'қазақша' : 'русский'}${link ? ` · <a href="${link}">открыть</a>` : ''}</div>
+    <div class="small"><b>${esc(c.reason || '')}</b> ${c.contact ? `· контакт: ${esc(c.contact)}` : c.user_id ? '· пользователь сайта' : ''}</div><p data-ugc>${esc(c.body)}</p>
+    <form class="row" data-ans="${c.id}"><select name="status">${Object.entries(CSTATUS).filter(([k]) => k !== 'new').map(([k, [x]]) => `<option value="${k}" ${c.status === k ? 'selected' : ''}>${x}</option>`).join('')}</select>
+    <input name="answer" class="grow" placeholder="Мотивированный ответ (обязателен для «Решено/Отклонено»)" value="${esc(c.answer || '')}"><button class="sm p">Сохранить</button></form></div>`; };
+  return `<p class="small muted">Открытых: ${open.length}. Срок ответа — 20 календарных дней. Отзывы скрываются во вкладке «Отзывы», исполнители — в «Исполнители».</p>${list.map(row).join('') || '<div class="empty">Обращений нет</div>'}`;
+}
+
+async function transparency() {
+  let d = null; try { d = S.caps.v4 ? await api.transparency() : null; } catch { d = null; }
+  const n = (x) => (x ?? '—');
+  return `<h1>📊 ${L('Прозрачность', 'Ашықтық')}</h1><div class="card"><p>${L('Сведения публикуются по ст. 9 и 13 Закона РК «Об онлайн-платформах и онлайн-рекламе». Счётчик не использует cookies и не хранит IP-адреса: учитывается одно посещение браузера в сутки.', 'Мәліметтер «Онлайн-платформалар және онлайн-жарнама туралы» ҚР Заңының 9 және 13-баптары бойынша жарияланады. Есептегіш cookies пайдаланбайды және IP-мекенжайларды сақтамайды: браузердің тәулігіне бір кіруі есепке алынады.')}</p></div>
+    ${d ? `<div class="card"><h3>Пользователи в Казахстане</h3><table><tr><th>Месяц</th><th>Посещений</th><th>В среднем в сутки</th></tr>${(d.monthly || []).map((m) => `<tr><td>${esc(m.month)}</td><td>${n(m.visitors)}</td><td>${n(m.avg_daily)}</td></tr>`).join('') || '<tr><td colspan="3" class="muted">Данные накапливаются</td></tr>'}</table>
+      <p class="small muted">${L('Зарегистрировано пользователей', 'Тіркелген пайдаланушылар')}: <b>${n(d.registered_users)}</b> · ${L('активных исполнителей', 'белсенді орындаушылар')}: <b>${n(d.providers_active)}</b></p></div>
+      <div class="card"><h3>Модерация и обращения за 12 месяцев</h3><div class="stats"><div><b>${n(d.complaints_total)}</b><small>обращений</small></div><div><b>${n(d.complaints_resolved)}</b><small>рассмотрено</small></div><div><b>${n(d.complaints_overdue)}</b><small>просрочено</small></div><div><b>${n(d.reviews_published)}</b><small>отзывов опубликовано</small></div><div><b>${n(d.reviews_hidden)}</b><small>на модерации / скрыто</small></div></div>
+      <p class="small muted">${L('Сформировано автоматически', 'Автоматты түрде жасалды')}: ${dt(d.generated_at)}.</p></div>` : '<div class="card muted">Отчёт появится после подключения обновления базы.</div>'}
+    <div class="card small"><a href="${legal('terms')}">Пользовательское соглашение</a> · <a href="${legal('reviews')}">Правила модерации</a> · <a href="#/complaint">Подать обращение</a></div>`;
+}
+
+function footer() {
+  const f = $('#foot'); if (!f) return;
+  f.innerHTML = `<nav aria-label="Документы"><a href="${legal('privacy')}">Политика конфиденциальности</a><a href="${legal('terms')}">Пользовательское соглашение</a><a href="${legal('offer')}">Договор для исполнителей</a><a href="${legal('reviews')}">Правила отзывов</a><a href="${legal('cookies')}">Cookies и хранилище</a><a href="${legal('contacts')}">Контакты и реквизиты</a><a href="#/complaint">Жалоба / обращение</a><a href="#/transparency">Прозрачность</a></nav>
+    <p>${L('АвтоМастер24 — информационная площадка-посредник между автовладельцами и исполнителями. Услуги оказывают исполнители и отвечают за их качество. Рекламы нет. 18+', 'АвтоМастер24 — көлік иелері мен орындаушылар арасындағы ақпараттық делдал-алаң. Қызметтерді орындаушылар көрсетеді және олардың сапасына жауап береді. Жарнама жоқ. 18+')}</p>
+    <p>© 2026 ${esc(CONFIG.OPERATOR)} · <button class="linkbtn" id="langBtn2" lang="${isKK() ? 'ru' : 'kk'}">${isKK() ? 'Русский' : 'Қазақша'}</button></p>`;
+  $('#langBtn2', f).onclick = () => setLang(isKK() ? 'ru' : 'kk');
+}
+function cookieNotice() {
+  if (localStorage.getItem('am24-cookie-ok')) return;
+  const d = document.createElement('div'); d.className = 'cookiebar'; d.setAttribute('role', 'region'); d.setAttribute('aria-label', 'Cookies');
+  d.innerHTML = `<span>${isKK() ? 'Біз жарнамалық cookies пайдаланбаймыз. Сайт браузерде тек баптаулар мен кіру сессиясын сақтайды.' : 'Мы не используем рекламные cookies. Сайт хранит в браузере только настройки и сессию входа.'} <a href="${legal('cookies')}">${isKK() ? 'Толығырақ' : 'Подробнее'}</a></span><button class="p sm">${isKK() ? 'Түсінікті' : 'Понятно'}</button>`;
+  $('button', d).onclick = () => { localStorage.setItem('am24-cookie-ok', '1'); d.remove(); };
+  document.body.appendChild(d);
+}
+function countVisit() {
+  const day = new Date().toISOString().slice(0, 10);
+  if (localStorage.getItem('am24-hit') === day || !S.caps.v4) return;
+  localStorage.setItem('am24-hit', day); api.hit().catch(() => {});
+}
 
 boot();

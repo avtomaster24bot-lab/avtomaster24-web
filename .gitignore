@@ -5,3 +5,4 @@
 .env.*
 private/
 node_modules/
+__pycache__/

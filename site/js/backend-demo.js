@@ -248,7 +248,7 @@ export const demo = {
   async setProviderVerified(pid, v) { const p = prov(pid); if (!p || !isAdmin(p.city)) fail('Нет прав'); p.verified = !!v; save(); },
 
   // ---- обновление 3: фото, чат, статистика, ответы на отзывы
-  async caps() { return { v3: true }; },
+  async caps() { return { v3: true, v4: true }; },
   async uploadRequestPhoto(blob) { if (!uid()) fail('Войдите'); return putPhoto(`req/${uid()}/${Date.now()}-${Math.random().toString(36).slice(2, 8)}.jpg`, blob); },
   async photoUrls(paths) { const m = photos(); return (paths || []).map((x) => (/^(assets|https?:|data:)/.test(x) ? x : m[x]) || ''); },
   async uploadProviderPhoto(pid, blob) { const p = prov(pid); if (!p || (p.owner_id !== uid() && !isAdmin(p.city))) fail('Нет прав'); return new Promise((ok, no) => { const fr = new FileReader(); fr.onload = () => ok(fr.result); fr.onerror = () => no(new Error('Не удалось прочитать фото')); fr.readAsDataURL(blob); }); },
@@ -287,6 +287,62 @@ export const demo = {
     const x = load().reviews.find((r) => r.id === +rvid) || fail('Отзыв не найден');
     if (!(prov(x.provider_id)?.owner_id === uid() || isAdmin())) fail('Нет прав');
     x.reply = (text || '').trim().slice(0, 1000) || null; x.reply_at = now(); save();
+  },
+
+  // ---- обновление 4: согласия, обращения, права субъекта ПД, прозрачность
+  async acceptLegal(kinds, version) {
+    const m = me() || fail('Нужно войти'); const d = load(); d.consents ||= [];
+    for (const k of kinds) d.consents.push({ id: id(), user_id: m.id, kind: k, version, accepted: true, user_agent: navigator.userAgent.slice(0, 300), created_at: now() });
+    if (['pd', 'cross_border', 'terms', 'age18'].every((k) => kinds.includes(k))) Object.assign(m, { consent: true, consent_at: now(), legal_version: version, age_confirmed: true });
+    save(); return clone(m);
+  },
+  async withdrawConsent() {
+    const m = me() || fail('Нужно войти'); const d = load(); d.consents ||= [];
+    for (const k of ['pd', 'cross_border']) d.consents.push({ id: id(), user_id: m.id, kind: k, version: m.legal_version || '-', accepted: false, created_at: now() });
+    Object.assign(m, { phone: null, consent: false, legal_version: null }); save();
+  },
+  async exportMyData() {
+    const u = uid() || fail('Нужно войти'); const d = load();
+    return clone({ exported_at: now(), profile: me(), vehicles: d.vehicles.filter((x) => x.user_id === u), requests: d.requests.filter((x) => x.user_id === u),
+      reviews: d.reviews.filter((x) => x.user_id === u), messages: d.messages.filter((x) => x.sender_id === u).map(({ request_id, body, created_at }) => ({ request_id, body, created_at })),
+      registrations: d.registrations.filter((x) => x.user_id === u), providers: d.providers.filter((x) => x.owner_id === u),
+      consents: (d.consents || []).filter((x) => x.user_id === u), complaints: (d.complaints || []).filter((x) => x.user_id === u) });
+  },
+  async deleteAccount() {
+    const m = me() || fail('Нужно войти'); if (m.role !== 'client') fail('Администратор не может удалить себя — сначала передайте права');
+    const d = load(), u = m.id;
+    d.vehicles = d.vehicles.filter((x) => x.user_id !== u);
+    d.messages.forEach((x) => { if (x.sender_id === u) x.body = '[удалено]'; });
+    d.reviews.forEach((x) => { if (x.user_id === u) x.user_id = null; });
+    d.requests.forEach((x) => { if (x.user_id === u) { const { photos, lat, lon, ...rest } = x.details || {}; x.details = rest; } });
+    d.providers.forEach((x) => { if (x.owner_id === u) { x.owner_id = null; x.is_active = false; } });
+    Object.assign(m, { username: null, full_name: 'Удалённый пользователь', phone: null, consent: false, legal_version: null, deleted_at: now() });
+    save(); localStorage.removeItem(UKEY);
+  },
+  async submitComplaint({ type, target = '', reason = '', body = '', contact = '', lang = 'ru' }) {
+    if (!uid() && !contact.trim()) fail('Укажите телефон, e-mail или Telegram для ответа');
+    if (body.trim().length < 5) fail('Опишите суть обращения (не короче 5 символов)');
+    const d = load(); d.complaints ||= [];
+    const c = { id: id(), user_id: uid() || null, target_type: type, target_id: String(target), reason, body: body.trim().slice(0, 3000), contact, lang,
+      status: 'new', answer: null, created_at: now(), due_at: new Date(Date.now() + 20 * 864e5).toISOString(), answered_at: null };
+    d.complaints.push(c); save(); return { id: c.id, created_at: c.created_at, due_at: c.due_at, status: c.status };
+  },
+  async myComplaints() { return clone((load().complaints || []).filter((c) => c.user_id && c.user_id === uid()).reverse()); },
+  async adminComplaints() { if (!isAdmin()) fail('Нет прав'); return clone((load().complaints || []).slice().reverse()); },
+  async answerComplaint(cid, status, answer) {
+    if (!isAdmin()) fail('Нет прав'); if (['resolved', 'rejected'].includes(status) && !(answer || '').trim()) fail('Нужен мотивированный ответ');
+    const c = (load().complaints || []).find((x) => x.id === +cid) || fail('Не найдено');
+    Object.assign(c, { status, answer: (answer || '').trim() || null, answered_at: ['resolved', 'rejected'].includes(status) ? now() : c.answered_at }); save();
+  },
+  async hit() { const d = load(); d.visits ||= {}; const k = now().slice(0, 10); d.visits[k] = (d.visits[k] || 0) + 1; save(); },
+  async transparency() {
+    const d = load(), by = {}; for (const [day, v] of Object.entries(d.visits || {})) { const m = day.slice(0, 7); (by[m] ||= []).push(v); }
+    const cs = d.complaints || [];
+    return { generated_at: now(), monthly: Object.entries(by).sort().reverse().slice(0, 6).map(([month, a]) => ({ month, visitors: a.reduce((x, y) => x + y, 0), avg_daily: Math.round(a.reduce((x, y) => x + y, 0) / a.length) })),
+      registered_users: Object.values(d.profiles).filter((p) => !p.deleted_at).length, providers_active: d.providers.filter((p) => p.is_active).length,
+      complaints_total: cs.length, complaints_resolved: cs.filter((c) => ['resolved', 'rejected'].includes(c.status)).length,
+      complaints_overdue: cs.filter((c) => ['new', 'in_review'].includes(c.status) && new Date(c.due_at) < new Date()).length,
+      reviews_published: d.reviews.filter((r) => r.is_published).length, reviews_hidden: d.reviews.filter((r) => !r.is_published).length };
   },
 
   async addCity(name) { if (!isAdmin()) fail('Нет прав'); if (!name) fail('Введите название'); load().cities.push({ id: id(), name, region: '', active: true }); save(); },

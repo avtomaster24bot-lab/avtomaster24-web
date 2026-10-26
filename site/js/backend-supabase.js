@@ -139,7 +139,9 @@ export const live = {
     if (capsCache) return capsCache;
     const r = await (await from('am_messages')).select('id').limit(1);
     // 42P01 — таблицы ещё нет (миграция не применена); ошибка прав (аноним) значит таблица есть
-    capsCache = { v3: !(r.error && /does not exist|42P01|schema cache/i.test(r.error.message + r.error.code)) };
+    const r4 = await (await from('am_complaints')).select('id').limit(1);
+    const missing = (x) => !!(x.error && /does not exist|42P01|PGRST205|schema cache/i.test(x.error.message + x.error.code));
+    capsCache = { v3: !missing(r), v4: !missing(r4) };
     return capsCache;
   },
   async uploadRequestPhoto(blob) {
@@ -174,6 +176,20 @@ export const live = {
     return () => { off = true; if (ch) sb.removeChannel(ch); };
   },
   async replyReview(id, text) { return rpc('am_reply_review', { p_id: +id, p_text: text || '' }); },
+
+  // ---- обновление 4 (supabase/04_legal.sql): согласия, обращения, права субъекта ПД, прозрачность
+  async acceptLegal(kinds, version) { return rpc('am_accept_legal', { p_kinds: kinds, p_version: version, p_ua: navigator.userAgent.slice(0, 300) }); },
+  async withdrawConsent() { return rpc('am_withdraw_consent', { p_ua: navigator.userAgent.slice(0, 300) }); },
+  async exportMyData() { return rpc('am_export_my_data'); },
+  async deleteAccount() { await rpc('am_delete_my_account', { p_ua: navigator.userAgent.slice(0, 300) }); const s = await client(); await s.auth.signOut({ scope: 'local' }).catch(() => {}); },
+  async submitComplaint({ type, target = '', reason = '', body = '', contact = '', lang = 'ru' }) {
+    return rpc('am_submit_complaint', { p_type: type, p_target: String(target), p_reason: reason, p_body: body, p_contact: contact, p_lang: lang });
+  },
+  async myComplaints(userId) { return must(await (await from('am_complaints')).select('*').eq('user_id', userId).order('id', { ascending: false }).limit(50)); },
+  async adminComplaints() { return must(await (await from('am_complaints')).select('*').order('id', { ascending: false }).limit(200)); },
+  async answerComplaint(id, status, answer) { return rpc('am_answer_complaint', { p_id: +id, p_status: status, p_answer: answer || '' }); },
+  async hit() { try { await rpc('am_hit'); } catch { /* миграция 04 ещё не применена */ } },
+  async transparency() { return rpc('am_transparency'); },
 
   async addCity(name) { return must(await (await from('am_cities')).insert({ name })); },
 };
