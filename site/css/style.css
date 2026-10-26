@@ -142,3 +142,8 @@ td b,.price{white-space:nowrap}
 .top #citySel{min-width:0;flex:0 1 150px;width:auto}.top .iconbtn,.top .chip{flex:0 0 auto}
 @media (max-width:440px){.top .iconbtn{width:32px;height:32px;font-size:14px}.top .iconbtn.lang{width:auto;padding:0 7px;font-size:11px}.logo span{font-size:13px;letter-spacing:0}}
 @media (max-width:389px){.logo span{display:none}}
+/* Обновление 5: уведомления */
+#nav a{position:relative}
+.nbadge{position:absolute;top:2px;left:calc(50% + 6px);min-width:18px;height:18px;padding:0 5px;border-radius:9px;background:var(--err,#e5484d);color:#fff;font:700 11px/18px var(--font,system-ui);font-style:normal;text-align:center;box-shadow:0 0 0 2px var(--bg)}
+.toast.link{cursor:pointer;text-decoration:underline dotted;text-underline-offset:3px}
+.test-badge{display:inline-block;margin-left:6px;padding:1px 6px;border-radius:6px;background:#7a3cff;color:#fff;font-size:11px;font-weight:700;vertical-align:middle}

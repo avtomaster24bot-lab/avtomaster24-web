@@ -18,6 +18,8 @@ function human(e) {
 const must = ({ data, error }) => { if (error) throw new Error(human(error)); return data; };
 const rpc = async (fn, args = {}) => must(await (await client()).rpc(fn, args));
 const from = async (t) => (await client()).from(t);
+// id текущего пользователя из локальной сессии (без лишнего запроса к /auth/v1/user; права всё равно проверяет база)
+async function me() { const s = await client(); const { data } = await s.auth.getSession(); return data.session?.user || null; }
 
 export async function supabaseReady() {
   if (CONFIG.FORCE_DEMO || !/^https:\/\//.test(CONFIG.SUPABASE_URL || '') || !CONFIG.SUPABASE_ANON_KEY) return false;
@@ -76,15 +78,15 @@ export const live = {
     return r.error ? must(await q('id,rating,comment,is_published,created_at,request_id,provider_id')) : r.data;
   },
   async myProviders() {
-    const s = await client(); const { data } = await s.auth.getUser(); if (!data.user) return [];
-    return must(await (await from('am_providers')).select('*').eq('owner_id', data.user.id).order('id'));
+    const s = await client(); const u = await me(); if (!u) return [];
+    return must(await (await from('am_providers')).select('*').eq('owner_id', u.id).order('id'));
   },
   async updateProvider(id, patch) { return must(await (await from('am_providers')).update(patch).eq('id', id).select().single()); },
 
   async createRequest(p) { return rpc('am_create_request', { p }); },
   async myRequests() {
-    const s = await client(); const { data } = await s.auth.getUser(); if (!data.user) return [];
-    return must(await (await from('am_requests')).select('*').eq('user_id', data.user.id).order('id', { ascending: false }).limit(100));
+    const s = await client(); const u = await me(); if (!u) return [];
+    return must(await (await from('am_requests')).select('*').eq('user_id', u.id).order('id', { ascending: false }).limit(100));
   },
   async cancelRequest(id) { return rpc('am_cancel_request', { p_id: id }); },
   async requestOffers(id) { return rpc('am_request_offers', { p_id: id }); },
@@ -120,8 +122,8 @@ export const live = {
 
   async registerBusiness(p) { return rpc('am_register_business', { p }); },
   async myRegistrations() {
-    const s = await client(); const { data } = await s.auth.getUser(); if (!data.user) return [];
-    return must(await (await from('am_registrations')).select('*').eq('user_id', data.user.id).order('id', { ascending: false }));
+    const s = await client(); const u = await me(); if (!u) return [];
+    return must(await (await from('am_registrations')).select('*').eq('user_id', u.id).order('id', { ascending: false }));
   },
   async adminRegistrations() { return must(await (await from('am_registrations')).select('*').order('id', { ascending: false }).limit(200)); },
   async reviewRegistration(id, approve, reason) { return rpc('am_review_registration', { p_id: id, p_approve: !!approve, p_reason: reason || null }); },
@@ -145,8 +147,8 @@ export const live = {
     return capsCache;
   },
   async uploadRequestPhoto(blob) {
-    const s = await client(); const { data } = await s.auth.getUser(); if (!data.user) throw new Error('Войдите');
-    const path = `req/${data.user.id}/${Date.now()}-${Math.random().toString(36).slice(2, 8)}.jpg`;
+    const s = await client(); const u = await me(); if (!u) throw new Error('Войдите');
+    const path = `req/${u.id}/${Date.now()}-${Math.random().toString(36).slice(2, 8)}.jpg`;
     must(await s.storage.from('am-photos').upload(path, blob, { contentType: 'image/jpeg', upsert: false }));
     return path;
   },
@@ -173,6 +175,12 @@ export const live = {
   subscribeMessages(id, cb) {
     let ch = null, off = false;
     client().then((s) => { if (off) return; ch = s.channel('am-msg-' + id).on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'am_messages', filter: `request_id=eq.${+id}` }, (e) => cb(e.new)).subscribe(); });
+    return () => { off = true; if (ch) sb.removeChannel(ch); };
+  },
+  // все новые сообщения, которые пользователю разрешено видеть (RLS фильтрует на сервере) — для уведомлений
+  subscribeInbox(cb) {
+    let ch = null, off = false;
+    client().then((s) => { if (off) return; ch = s.channel('am-inbox').on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'am_messages' }, (e) => cb(e.new)).subscribe(); });
     return () => { off = true; if (ch) sb.removeChannel(ch); };
   },
   async replyReview(id, text) { return rpc('am_reply_review', { p_id: +id, p_text: text || '' }); },

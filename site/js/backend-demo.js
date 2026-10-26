@@ -282,6 +282,7 @@ export const demo = {
       load().messages.push(a); save(); bus.forEach((f) => f(a)); }, 2500);
     return clone(m);
   },
+  subscribeInbox(cb) { const f = (m) => cb(m); bus.add(f); return () => bus.delete(f); },
   subscribeMessages(rid, cb) { const f = (m) => { if (m.request_id === +rid) cb(m); }; bus.add(f); return () => bus.delete(f); },
   async replyReview(rvid, text) {
     const x = load().reviews.find((r) => r.id === +rvid) || fail('Отзыв не найден');
@@ -376,7 +377,8 @@ function demoAutoReply(rid) {
   } else if (r.type === 'wash') {
     touch(r, { status: 'price_offered', accepted_by: p.id, price: 6000, assigned_time: r.desired_time || plus(120) });
   } else touch(r, { status: 'active', accepted_by: p.id });
-  if (r.type !== 'parts') load().messages.push({ id: id(), request_id: r.id, sender_id: null, from_provider: true, created_at: now(),
+  let msg = null;
+  if (r.type !== 'parts') load().messages.push(msg = { id: id(), request_id: r.id, sender_id: null, from_provider: true, created_at: now(),
     body: r.type === 'parts' ? 'Здравствуйте! Есть в наличии, можем отложить.' : r.type === 'wash' ? 'Здравствуйте! Предложили вам время — подтвердите, пожалуйста.' : 'Здравствуйте! Заявку принял, могу уточнить детали здесь в чате.' });
-  save(); bus.forEach((f) => f({ request_id: r.id }));
+  save(); bus.forEach((f) => f(msg ? clone(msg) : { request_id: r.id }));
 }

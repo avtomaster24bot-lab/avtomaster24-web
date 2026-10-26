@@ -19,7 +19,11 @@ const tip = (t) => `<button type="button" class="tip" aria-label="Подсказ
 const opts = (name, list, sel, type = 'radio') => `<div class="opts">${list.map(([v, t]) => `<label class="opt"><input type="${type}" name="${name}" value="${esc(v)}" ${(Array.isArray(sel) ? sel.includes(v) : sel === v) ? 'checked' : ''}><span>${esc(t)}</span></label>`).join('')}</div>`;
 const pairs = (arr) => arr.map((x) => [x, x]);
 const mapUrl = (city, address) => `https://2gis.kz/search/${encodeURIComponent([city, address].filter(Boolean).join(', '))}`;
-function toast(msg, err = false) { const el = $('#toast'); el.textContent = t(msg); el.className = 'toast' + (err ? ' err' : ''); el.hidden = false; clearTimeout(el._h); el._h = setTimeout(() => { el.hidden = true; }, 3500); }
+function toast(msg, err = false, href = '') {
+  const el = $('#toast'); el.textContent = t(msg); el.className = 'toast' + (err ? ' err' : '') + (href ? ' link' : ''); el.hidden = false;
+  el.onclick = href ? () => { el.hidden = true; location.hash = href; } : null; el.setAttribute('role', href ? 'button' : 'status');
+  clearTimeout(el._h); el._h = setTimeout(() => { el.hidden = true; }, href ? 7000 : 3500);
+}
 const formData = (f) => { const o = {}; for (const [k, v] of new FormData(f)) { if (v instanceof File) continue; o[k] = o[k] !== undefined ? [].concat(o[k], v) : v; } return o; };
 async function act(btn, fn, okMsg) {
   if (btn) btn.disabled = true;
@@ -99,6 +103,7 @@ async function refreshMe() {
   try { S.me = await api.session(); } catch (e) { S.me = null; toast(e.message, true); }
   if (S.me?.city && !localStorage.getItem('am24-city')) S.city = S.me.city;
   try { S.myProv = S.me ? await api.myProviders() : []; } catch { S.myProv = []; }
+  nStart();
 }
 
 function chrome(route) {
@@ -118,7 +123,8 @@ function chrome(route) {
   const items = [['', '🏠', 'Главная'], ['requests', '📋', 'Заявки'], ['catalog', '🔎', 'Мастера'],
     S.myProv.length ? ['cabinet', '🛠', 'Кабинет'] : ['garage', '🚗', 'Гараж'], isAdmin() ? ['admin', '🛡', 'Админ'] : ['profile', '👤', 'Профиль']];
   footer(); const lb = $('#langBtn'); lb.textContent = isKK() ? 'РУС' : 'ҚАЗ'; lb.setAttribute('aria-label', isKK() ? 'Язык: русский' : 'Тіл: қазақша'); lb.lang = isKK() ? 'ru' : 'kk';
-  $('#nav').innerHTML = items.map(([h, i, l]) => `<a href="#/${h}" class="${route === h ? 'on' : ''}" ${route === h ? 'aria-current="page"' : ''}><span aria-hidden="true">${i}</span>${t(l)}</a>`).join('');
+  $('#nav').innerHTML = items.map(([h, i, l]) => `<a href="#/${h}" data-nav="${h}" class="${route === h ? 'on' : ''}" ${route === h ? 'aria-current="page"' : ''}><span aria-hidden="true">${i}</span>${t(l)}</a>`).join('');
+  paintBadges();
 }
 
 // ------------------------------------------------------------ роутер
@@ -133,6 +139,8 @@ async function render() {
   const q = Object.fromEntries(new URLSearchParams(qs || ''));
   const gated = ['new', 'requests', 'request', 'chat', 'garage', 'business', 'cabinet'];
   const fn = needsConsent() && gated.includes(name) ? consent : (routes[name] || home);
+  if (['requests', 'request', 'chat'].includes(name)) N.badges.requests = 0;
+  if (['cabinet', 'chat'].includes(name)) N.badges.cabinet = 0;
   chrome(name in routes ? name : '');
   const v = $('#view');
   const same = S.lastHash === location.hash; S.lastHash = location.hash;
@@ -213,7 +221,7 @@ function installBtns(v) {
 }
 
 // ------------------------------------------------------------ каталог и карточка исполнителя
-const verifiedBadge = (p) => p.verified ? '<span class="vbadge" title="Проверен администратором АвтоМастер24">✔ Проверен</span>' : '';
+const verifiedBadge = (p) => (p.verified ? '<span class="vbadge" title="Проверен администратором АвтоМастер24">✔ Проверен</span>' : '') + (p.is_test ? '<span class="test-badge" title="Тестовая организация — видна только тестовым аккаунтам и администраторам">ТЕСТ</span>' : '');
 const favBtn = (p) => `<button class="fav ${isFav(p.id) ? 'on' : ''}" data-fav="${p.id}" aria-pressed="${isFav(p.id)}" aria-label="В избранное">${isFav(p.id) ? '♥' : '♡'}</button>`;
 const provMeta = (p) => `${esc(p.city)}${p.address ? ' · ' + esc(p.address) : ''}${p.working_hours ? ' · 🕘 ' + esc(p.working_hours) : ''}`;
 const provSpec = (p) => `${p.kind === 'sto' && p.specs?.length ? `<div class="small">${p.specs.map((c) => esc(catName(c))).filter(Boolean).join(' · ')}</div>` : ''}
@@ -432,7 +440,7 @@ async function request(id) {
   } else if (['new'].includes(st)) {
     block = `<div class="card"><p><span class="pulse"></span> Заявку видят исполнители. Как только кто-то примет — здесь появятся его контакты и чат.</p></div>`;
     if (['tow', 'sto', 'urgent'].includes(r.type) && Date.now() - new Date(r.created_at) > 5 * 60000) {
-      const all = await api.listProviders({ kind: r.type, city: r.city });
+      const all = (await api.listProviders({ kind: r.type, city: r.city })).filter((p) => r.type !== 'urgent' || !r.service_type || p.service_type === r.service_type);
       block += `<div class="card"><h3>Пока никто не ответил — позвоните напрямую</h3>${all.map((p) => `<div class="row between small" style="padding:4px 0"><a href="#/provider/${p.id}">${esc(p.name)}</a>${tel(p.phone)}</div>`).join('') || '<p class="muted">Нет исполнителей в городе</p>'}</div>`;
     }
   }
@@ -562,6 +570,7 @@ async function profile() {
     <label>Город</label><select name="city">${S.ref.cities.filter((c) => c.active).map((c) => `<option ${c.name === (S.me.city || S.city) ? 'selected' : ''}>${esc(c.name)}</option>`).join('')}</select>
     ${S.caps.v4 ? '' : `<label class="check"><input type="checkbox" name="consent" ${S.me.consent ? 'checked' : ''}> <span>Согласен(на) на обработку персональных данных (имя и телефон) для передачи исполнителю, который примет мою заявку. Закон РК «О персональных данных и их защите».</span></label>`}
     <button class="p" style="margin-top:12px">Сохранить</button></form>
+    ${notifyCard()}
     ${S.caps.v4 ? await privacyCard() : ''}
     ${regs.length ? `<div class="card"><h3>Мои заявки на подключение бизнеса</h3>${regs.map((g) => `<div class="row between small"><span>${KINDS[g.kind].icon} ${esc(g.name)}</span>${badge(g.status)}</div>${g.reason ? `<div class="small muted">${esc(g.reason)}</div>` : ''}`).join('')}</div>` : ''}
     <div class="card row">${S.myProv.length ? '<a class="btn" href="#/cabinet">🛠 Кабинет исполнителя</a>' : '<a class="btn" href="#/business">💼 Подключить бизнес</a>'}${isAdmin() ? '<a class="btn" href="#/admin">🛡 Админ</a>' : ''}<a class="btn" href="#/garage">🚗 Гараж</a>
@@ -570,7 +579,7 @@ async function profile() {
 profile.after = (v) => {
   const f = $('#prf', v); if (!f) return login.after(v);
   f.onsubmit = (e) => { e.preventDefault(); const d = formData(f); act($('button', f), async () => { S.me = await api.updateProfile({ ...d, consent: S.caps.v4 ? !!S.me.consent : !!d.consent }); S.city = d.city; localStorage.setItem('am24-city', S.city); }, 'Профиль сохранён'); };
-  privacyAfter(v);
+  privacyAfter(v); notifyAfter(v);
   installBtns(v);
   $('#logout', v).onclick = async () => { await api.logout(); await refreshMe(); location.hash = '#/'; };
   if ($('#delData', v)) $('#delData', v).onclick = () => { if (confirm('Удалить телефон и согласие? Заявки и отзывы сохранятся.')) act(null, async () => { await api.deleteMyData(); await refreshMe(); }, 'Данные удалены'); };
@@ -704,7 +713,7 @@ cabinet.after = (v, _, q) => {
 async function admin(_, q) {
   if (!isAdmin()) return `<h1>Админ-панель</h1>${S.me ? '<div class="card">Нет доступа. Админа назначают в базе (см. README).</div>' : needLogin('админ-панели')}`;
   const tab = q.t || 'stats';
-  const head = `<h1>🛡 Админ-панель</h1><div class="tabs">${[['stats', '📊 Статистика'], ['regs', '🗂 Регистрации'], ['reqs', '📋 Заявки'], ['reviews', '⭐ Отзывы'], ['provs', '🏢 Исполнители'], ...(S.caps.v4 ? [['complaints', '⚑ Обращения']] : []), ['cities', '🏙 Города']].map(([t, n]) => `<a href="#/admin?t=${t}" class="${t === tab ? 'on' : ''}">${n}</a>`).join('')}</div>`;
+  const head = `<h1>🛡 Админ-панель</h1>${S.me.role === 'regional_admin' ? `<p class="small muted">Регион: <b>${esc(S.me.managed_city || '')}</b></p>` : ''}<div class="tabs">${[['stats', '📊 Статистика'], ['regs', '🗂 Регистрации'], ['reqs', '📋 Заявки'], ['reviews', '⭐ Отзывы'], ['provs', '🏢 Исполнители'], ...(S.caps.v4 ? [['complaints', '⚑ Обращения']] : []), ...(S.me.role === 'global_admin' ? [['cities', '🏙 Города']] : [])].map(([t, n]) => `<a href="#/admin?t=${t}" class="${t === tab ? 'on' : ''}">${n}</a>`).join('')}</div>`;
   if (tab === 'stats') { const s = await api.adminStats();
     const L = { users: 'Пользователей', providers: 'Исполнителей', requests: 'Заявок всего', active: 'Активных заявок', completed: 'Выполнено', turnover: 'Оборот по выполненным', pending_regs: 'Ждут одобрения', pending_reviews: 'Отзывы на модерации' };
     return head + `<div class="grid">${Object.entries(L).map(([k, n]) => `<div class="tile"><small>${n}</small><b class="price">${k === 'turnover' ? money(s[k]) : s[k]}</b></div>`).join('')}</div>`; }
@@ -717,8 +726,9 @@ async function admin(_, q) {
   if (tab === 'reviews') { const r = await api.pendingReviews();
     return head + (r.map((x) => `<div class="card">${stars(x.rating)} <b>${esc(x.provider_name || '')}</b><p>${esc(x.comment)}</p><div class="row"><button class="ok" data-pub="${x.id}">Опубликовать</button><button class="danger" data-rej="${x.id}">Удалить</button></div></div>`).join('') || '<div class="empty">Нет отзывов на модерации</div>'); }
   if (tab === 'provs') { const p = await api.adminProviders();
-    return head + `<div class="card"><table><tr><th>Название</th><th>Тип</th><th>Город</th><th>Рейтинг</th><th></th></tr>${p.map((x) => `<tr><td><a href="#/provider/${x.id}">${esc(x.name)}</a></td><td>${KINDS[x.kind].short}</td><td>${esc(x.city)}</td><td>${Number(x.rating).toFixed(1)}</td><td class="row"><button class="sm ${x.is_active ? 'danger' : 'ok'}" data-pa="${x.id}:${x.is_active ? 0 : 1}">${x.is_active ? 'Отключить' : 'Включить'}</button>${S.caps.v3 ? `<button class="sm ${x.verified ? '' : 'ok'}" data-pv="${x.id}:${x.verified ? 0 : 1}" title="Отметка «Проверен» — после проверки документов/адреса">${x.verified ? 'Снять ✔' : '✔ Проверен'}</button>` : ''}</td></tr>`).join('')}</table></div>`; }
+    return head + `<div class="card"><table><tr><th>Название</th><th>Тип</th><th>Город</th><th>Рейтинг</th><th></th></tr>${p.map((x) => `<tr><td><a href="#/provider/${x.id}">${esc(x.name)}</a>${x.is_test ? '<span class="test-badge">ТЕСТ</span>' : ''}</td><td>${KINDS[x.kind].short}</td><td>${esc(x.city)}</td><td>${Number(x.rating).toFixed(1)}</td><td class="row"><button class="sm ${x.is_active ? 'danger' : 'ok'}" data-pa="${x.id}:${x.is_active ? 0 : 1}">${x.is_active ? 'Отключить' : 'Включить'}</button>${S.caps.v3 ? `<button class="sm ${x.verified ? '' : 'ok'}" data-pv="${x.id}:${x.verified ? 0 : 1}" title="Отметка «Проверен» — после проверки документов/адреса">${x.verified ? 'Снять ✔' : '✔ Проверен'}</button>` : ''}</td></tr>`).join('')}</table></div>`; }
   if (tab === 'complaints') return head + await adminComplaints();
+  if (S.me.role !== 'global_admin') return head + '<div class="card muted">Справочник городов меняет только главный администратор.</div>';
   S.ref = await api.ref();
   return head + `<div class="card"><table>${S.ref.cities.map((c) => `<tr><td>${esc(c.name)}</td><td class="small muted">${esc(c.region || '')}</td><td><button class="${c.active ? 'danger' : 'ok'}" data-ca="${c.id}:${c.active ? 0 : 1}">${c.active ? 'Скрыть' : 'Показать'}</button></td></tr>`).join('')}</table>
     <form class="row" id="cityForm" style="margin-top:10px"><input name="name" class="grow" placeholder="Новый город" required><button class="p">Добавить</button></form></div>`;
@@ -850,6 +860,94 @@ function countVisit() {
   const day = new Date().toISOString().slice(0, 10);
   if (localStorage.getItem('am24-hit') === day || !S.caps.v4) return;
   localStorage.setItem('am24-hit', day); api.hit().catch(() => {});
+}
+
+// ------------------------------------------------------------ уведомления: звук, счётчики в меню, системные
+// Клиенту — смена статуса заявки и новые сообщения; исполнителю — новые заявки в ленте, решения клиента и сообщения.
+const N = { badges: { requests: 0, cabinet: 0 }, timer: null, unsub: null, uid: null, busy: false };
+const nKey = (k) => `am24-n-${S.me?.id}-${k}`;
+const nGet = (k) => { try { return JSON.parse(localStorage.getItem(nKey(k))); } catch { return null; } };
+const nSet = (k, v) => { try { localStorage.setItem(nKey(k), JSON.stringify(v)); } catch { /* переполнено */ } };
+const soundOn = () => localStorage.getItem('am24-sound') !== '0';
+const plain = (h) => { const d = document.createElement('div'); d.innerHTML = h; return d.textContent; };
+let actx = null;
+document.addEventListener('pointerdown', () => { try { actx ||= new (window.AudioContext || window.webkitAudioContext)(); if (actx.state === 'suspended') actx.resume(); } catch { /* нет звука */ } }, { once: true });
+function beep() {
+  if (!soundOn() || !actx) return;
+  try {
+    const t0 = actx.currentTime;
+    [880, 1320].forEach((f, i) => { const o = actx.createOscillator(), g = actx.createGain(), a = t0 + i * 0.16;
+      o.type = 'sine'; o.frequency.value = f; g.gain.setValueAtTime(0.0001, a); g.gain.exponentialRampToValueAtTime(0.2, a + 0.02); g.gain.exponentialRampToValueAtTime(0.0001, a + 0.15);
+      o.connect(g).connect(actx.destination); o.start(a); o.stop(a + 0.16); });
+  } catch { /* ignore */ }
+  try { navigator.vibrate?.([80, 60, 80]); } catch { /* ignore */ }
+}
+function paintBadges() {
+  for (const k of ['requests', 'cabinet']) {
+    const a = $(`#nav [data-nav="${k}"]`); if (!a) continue; let b = $('.nbadge', a); const n = N.badges[k];
+    if (!n) { b?.remove(); continue; }
+    if (!b) { b = document.createElement('i'); b.className = 'nbadge'; a.appendChild(b); }
+    b.textContent = n > 9 ? '9+' : n; b.setAttribute('aria-label', `новых: ${n}`);
+  }
+  const total = N.badges.requests + N.badges.cabinet;
+  document.title = (total ? `(${total}) ` : '') + document.title.replace(/^\(\d+\)\s*/, '');
+}
+function notify(text, href, where) {
+  N.badges[where] = (N.badges[where] || 0) + 1; paintBadges(); beep(); toast('🔔 ' + text, false, href);
+  if (document.hidden && 'Notification' in window && Notification.permission === 'granted') {
+    try { const n = new Notification('АвтоМастер24', { body: t(text), icon: 'assets/icon-192.png', tag: href, lang: isKK() ? 'kk' : 'ru' }); n.onclick = () => { window.focus(); location.hash = href; n.close(); }; } catch { /* ignore */ }
+  }
+}
+const N_CLIENT = { active: 'Исполнитель принял вашу заявку', offers: 'Пришло предложение цены', price_offered: 'Мойка предложила цену и время — подтвердите',
+  in_progress: 'Мойка начала работу', waiting_client: 'Машина готова — можно забирать', delivered: 'Запчасть передана — подтвердите получение',
+  completed: 'Заявка выполнена — оцените исполнителя', expired: 'Никто не успел ответить — позвоните исполнителю напрямую' };
+const N_PROV = { client_approved: 'Клиент подтвердил запись', cancelled: 'Клиент отменил заявку', completed: 'Клиент подтвердил выполнение', active: 'Клиент выбрал ваше предложение' };
+async function nPoll() {
+  if (!S.me || N.busy) return; N.busy = true;
+  try {
+    const mine = await api.myRequests().catch(() => null);
+    if (mine) {
+      const prev = nGet('st'), cur = {};
+      for (const r of mine) { const st = effStatus(r); cur[r.id] = st;
+        const was = prev ? (prev[r.id] || 'new') : st;   // заявка создана после прошлой проверки — считаем, что была «new»
+        if (was !== st && N_CLIENT[st]) notify(`${N_CLIENT[st]} · №${r.id}`, `#/request/${r.id}`, 'requests'); }
+      nSet('st', cur);
+    }
+    for (const p of S.myProv) {
+      if (!p.is_active) continue;
+      const feed = await api.providerFeed(p.id).catch(() => null); if (!feed) continue;
+      const prev = nGet('feed-' + p.id), cur = {};
+      for (const r of feed) { cur[r.id] = r.status;
+        if (!prev) continue;
+        if (!(r.id in prev)) { if (['new', 'offers'].includes(r.status)) notify(`Новая заявка: ${plain(reqTitle(r))}`, `#/cabinet?p=${p.id}`, 'cabinet'); }
+        else if (prev[r.id] !== r.status && N_PROV[r.status] && (r.status !== 'active' || r.type === 'parts')) notify(`${N_PROV[r.status]} · №${r.id}`, `#/cabinet?p=${p.id}`, 'cabinet'); }
+      nSet('feed-' + p.id, cur);
+    }
+  } finally { N.busy = false; }
+}
+function nStart() {
+  if (N.uid === (S.me?.id || null) && N.timer) return;
+  clearInterval(N.timer); N.timer = null; N.unsub?.(); N.unsub = null; N.badges = { requests: 0, cabinet: 0 }; N.uid = S.me?.id || null;
+  if (!S.me) return;
+  setTimeout(nPoll, 2500);
+  N.timer = setInterval(() => { if (!document.hidden || Date.now() % 3 === 0) nPoll(); }, CONFIG.REFRESH_SECONDS * 1000);
+  if (S.caps.v3 && api.subscribeInbox) N.unsub = api.subscribeInbox((m) => {
+    if (!m?.id || m.sender_id === S.me?.id || location.hash.startsWith(`#/chat/${m.request_id}`)) return;
+    notify(`Новое сообщение: ${String(m.body || '').slice(0, 60)}`, `#/chat/${m.request_id}`, m.from_provider ? 'requests' : 'cabinet');
+  });
+}
+function notifyCard() {
+  const can = 'Notification' in window, perm = can ? Notification.permission : 'denied';
+  return `<div class="card" id="nCard"><h3>🔔 Уведомления</h3><p class="small muted">Пока сайт открыт, мы сообщим о новых заявках, ответах исполнителей и сообщениях в чате: звук, счётчик в меню и всплывающая подсказка.</p>
+    <label class="check"><input type="checkbox" id="nSound" ${soundOn() ? 'checked' : ''}> <span>Звуковой сигнал</span></label>
+    ${can && perm === 'default' ? '<button class="btn sm" id="nPerm">Показывать уведомления, когда вкладка свернута</button>' : can && perm === 'granted' ? '<p class="small">✅ Уведомления браузера включены</p>' : ''}
+    <button class="btn sm ghost" id="nTest">Проверить звук</button></div>`;
+}
+function notifyAfter(v) {
+  const c = $('#nCard', v); if (!c) return;
+  $('#nSound', c).onchange = (e) => { localStorage.setItem('am24-sound', e.target.checked ? '1' : '0'); };
+  if ($('#nPerm', c)) $('#nPerm', c).onclick = async () => { try { await Notification.requestPermission(); } catch { /* ignore */ } render(); };
+  $('#nTest', c).onclick = () => { try { actx ||= new (window.AudioContext || window.webkitAudioContext)(); } catch { /* ignore */ } const was = localStorage.getItem('am24-sound'); localStorage.setItem('am24-sound', '1'); beep(); if (was) localStorage.setItem('am24-sound', was); };
 }
 
 boot();
