@@ -147,3 +147,11 @@ td b,.price{white-space:nowrap}
 .nbadge{position:absolute;top:2px;left:calc(50% + 6px);min-width:18px;height:18px;padding:0 5px;border-radius:9px;background:var(--err,#e5484d);color:#fff;font:700 11px/18px var(--font,system-ui);font-style:normal;text-align:center;box-shadow:0 0 0 2px var(--bg)}
 .toast.link{cursor:pointer;text-decoration:underline dotted;text-underline-offset:3px}
 .test-badge{display:inline-block;margin-left:6px;padding:1px 6px;border-radius:6px;background:#7a3cff;color:#fff;font-size:11px;font-weight:700;vertical-align:middle}
+/* Обновление 6: роли и права */
+.tblwrap{overflow-x:auto;-webkit-overflow-scrolling:touch}
+table.matrix{font-size:13px;min-width:640px}table.matrix td:not(:first-child),table.matrix th:not(:first-child){text-align:center;white-space:nowrap}
+.cols2{display:grid;grid-template-columns:1fr 1fr;gap:12px}@media(max-width:600px){.cols2{grid-template-columns:1fr}}
+.ucard form.row{gap:6px;flex-wrap:wrap}.ucard select{width:auto}
+.team{margin-top:8px;display:flex;flex-wrap:wrap;gap:10px;align-items:center}.team select{width:auto;padding:4px 8px}
+label.inline{display:inline-flex;gap:6px;align-items:center;margin:0}
+label.check{display:flex;gap:8px;align-items:flex-start;margin:8px 0}label.check input{width:auto;margin-top:3px}

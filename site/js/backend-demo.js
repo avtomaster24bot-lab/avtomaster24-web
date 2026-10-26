@@ -32,7 +32,7 @@ function initial() {
     'u-client': { id: 'u-client', username: 'demo_client', full_name: 'Демо Клиент', phone: '+77001112233', city: C, role: 'client', consent: true },
     'u-master': { id: 'u-master', username: 'demo_master', full_name: 'Демо Мастер', phone: '+77002223344', city: C, role: 'client', consent: true },
     'u-admin': { id: 'u-admin', username: 'demo_admin', full_name: 'Демо Админ', phone: '+77003334455', city: C, role: 'global_admin', consent: true },
-    'u-other': { id: 'u-other', username: null, full_name: 'Другой клиент (демо)', phone: '+77009990000', city: C, role: 'client', consent: true },
+    'u-other': { id: 'u-other', username: null, full_name: 'Другой клиент (демо)', phone: '+77009990000', city: C, role: 'client', consent: true },    ...EXTRA_PROFILES(),
   };
   const R = (id, type, extra) => ({ id, type, user_id: 'u-other', city: C, status: 'new', category_id: null, subcategory: null, service_type: null,
     supplier_type: null, target_provider_id: null, description: '', vehicle_info: '', details: {}, desired_time: null, assigned_time: null,
@@ -63,7 +63,12 @@ function initial() {
 }
 
 let db = null;
-const load = () => { if (!db) { try { db = JSON.parse(localStorage.getItem(KEY)); } catch { db = null; } if (!db) { db = initial(); save(); } } return db; };
+const EXTRA_PROFILES = () => ({
+  'u-staff': { id: 'u-staff', username: 'demo_staff', full_name: 'Демо Сотрудник', phone: '+77005556677', city: 'Талдыкорган', role: 'client', consent: true },
+  'u-region': { id: 'u-region', username: 'demo_region', full_name: 'Демо Регион. админ', phone: '+77006667788', city: 'Алматы', role: 'regional_admin', managed_city: 'Алматы', consent: true },
+});
+const load = () => { if (!db) { try { db = JSON.parse(localStorage.getItem(KEY)); } catch { db = null; } if (!db) { db = initial(); save(); }
+  if (db.profiles && !db.v6) { db.v6 = true; Object.assign(db.profiles, EXTRA_PROFILES()); db.staff ||= []; db.staff.push({ provider_id: 1, user_id: 'u-staff', role: 'master', created_at: new Date().toISOString() }); save(); } } return db; };
 const save = () => localStorage.setItem(KEY, JSON.stringify(db));
 const id = () => ++load().seq;
 const uid = () => localStorage.getItem(UKEY);
@@ -71,7 +76,12 @@ const me = () => load().profiles[uid()] || null;
 const fail = (m) => { throw new Error(m); };
 const isAdmin = (city) => { const m = me(); return !!m && (m.role === 'global_admin' || (m.role === 'regional_admin' && (!city || m.managed_city === city))); };
 const prov = (pid) => load().providers.find((p) => p.id === +pid);
-const myProv = (pid) => { const p = prov(pid); if (!p || p.owner_id !== uid()) fail('Это не ваша организация'); if (!p.is_active) fail('Организация отключена администратором'); return p; };
+const notBlocked = () => { if (me()?.blocked_at) fail('Аккаунт заблокирован администратором. Обжаловать: раздел «Жалоба / обращение»'); };
+const setting = (k, city) => { const st = load().settings || []; return (st.find((x) => x.key === k && x.city === (city || '') && city) || st.find((x) => x.key === k && x.city === ''))?.value; };
+const logA = (action, target, city, details = {}) => { const d = load(); d.admin_log ||= []; d.admin_log.unshift({ id: id(), actor_id: uid(), action, target_user: target, city: city || null, details, created_at: now() }); };
+const isGlobal = () => me()?.role === 'global_admin';
+const staffRole = (p) => !p ? null : p.owner_id === uid() ? 'owner' : (load().staff || []).find((x) => x.provider_id === p.id && x.user_id === uid())?.role || null;
+const myProv = (pid, roles = ['owner', 'manager']) => { const p = prov(pid); const role = staffRole(p); if (!p || !role || !roles.includes(role)) fail(role ? 'Недостаточно прав для вашей роли' : 'Это не ваша организация'); if (!p.is_active) fail('Организация отключена администратором'); return p; };
 const req = (rid) => load().requests.find((r) => r.id === +rid) || fail('Заявка не найдена');
 const myReq = (rid) => { const r = req(rid); if (r.user_id !== uid()) fail('Заявка не найдена'); return r; };
 const live = (r) => ['new', 'offers'].includes(r.status) && (!r.expires_at || new Date(r.expires_at) > new Date());
@@ -107,10 +117,13 @@ export const demo = {
   },
   async getProvider(pid) { return clone(prov(pid) || fail('Не найдено')); },
   async providerReviews(pid) { return clone(load().reviews.filter((x) => x.provider_id === +pid && (x.is_published || x.user_id === uid()))); },
-  async myProviders() { return clone(load().providers.filter((p) => p.owner_id === uid())); },
+  async myProviders() {
+    const d = load(); const st = (d.staff || []).filter((x) => x.user_id === uid());
+    return clone(d.providers.filter((p) => p.owner_id === uid() || st.some((x) => x.provider_id === p.id)).map((p) => ({ ...p, my_role: p.owner_id === uid() ? 'owner' : st.find((x) => x.provider_id === p.id).role })));
+  },
   async updateProvider(pid, patch) {
     const p = prov(pid); if (!p || (p.owner_id !== uid() && !isAdmin(p.city))) fail('Нет прав');
-    const allowed = ['name', 'address', 'phone', 'working_hours', 'specs', 'boxes', 'slot_minutes', 'delivery', 'supplier_type', 'service_type', 'about', 'photos', 'whatsapp'];
+    const allowed = ['name', 'address', 'phone', 'working_hours', 'specs', 'boxes', 'slot_minutes', 'delivery', 'supplier_type', 'service_type', 'about', 'photos', 'whatsapp', 'paused', 'days_off'];
     for (const k of Object.keys(patch)) if (allowed.includes(k) || isAdmin(p.city)) p[k] = patch[k];
     save(); return clone(p);
   },
@@ -119,7 +132,8 @@ export const demo = {
     const m = me() || fail('Войдите');
     if (!m.consent) fail('Нужно согласие на обработку персональных данных (Профиль)');
     if (!m.phone) fail('Укажите телефон в профиле — без него исполнитель не сможет связаться');
-    const ttl = p.type === 'parts' ? 180 : p.type === 'wash' ? null : 60;
+    notBlocked();
+    const ttl = p.type === 'wash' ? null : (setting('ttl_' + p.type, p.city || m.city) ?? (p.type === 'parts' ? 180 : 60));
     const r = { id: id(), type: p.type, user_id: m.id, city: p.city || m.city, status: 'new', category_id: p.category_id ? +p.category_id : null,
       subcategory: p.subcategory || null, service_type: p.service_type || null, supplier_type: p.supplier_type || null,
       target_provider_id: p.target_provider_id ? +p.target_provider_id : null, description: p.description || '', vehicle_info: p.vehicle_info || '',
@@ -149,7 +163,7 @@ export const demo = {
   async washApprove(rid) { const r = myReq(rid); if (r.status !== 'price_offered') fail('Мойка ещё не предложила цену и время'); touch(r, { status: 'client_approved', final_amount: r.price }); },
   async clientConfirm(rid) { const r = myReq(rid); if (!['active', 'delivered', 'waiting_client', 'in_progress'].includes(r.status)) fail('Нельзя завершить заявку в этом статусе'); touch(r, { status: 'completed' }); },
   async leaveReview(rid, rating, comment) {
-    const r = myReq(rid); if (r.status !== 'completed' || !r.accepted_by) fail('Оценить можно только выполненную заявку');
+    const r = myReq(rid); notBlocked(); if (r.status !== 'completed' || !r.accepted_by) fail('Оценить можно только выполненную заявку');
     if (load().reviews.some((x) => x.request_id === r.id)) fail('Вы уже оценили эту заявку');
     load().reviews.push({ id: id(), user_id: uid(), provider_id: r.accepted_by, request_id: r.id, rating: +rating, comment: comment || '', is_published: !(comment || '').trim(), created_at: now() });
     recalc(r.accepted_by); save();
@@ -157,7 +171,8 @@ export const demo = {
   async myReviewFor(rid) { return clone(load().reviews.find((x) => x.request_id === +rid) || null); },
 
   async providerFeed(pid) {
-    const p = myProv(pid); const dec = load().declines.filter((d) => d.provider_id === p.id).map((d) => d.request_id);
+    const p = myProv(pid, ['owner', 'manager', 'master']); const dec = load().declines.filter((d) => d.provider_id === p.id).map((d) => d.request_id);
+    if (staffRole(p) === 'master') return clone(load().requests.filter((r) => r.accepted_by === p.id && r.assigned_to === uid()).sort((a, b) => b.id - a.id));
     return clone(load().requests.filter((r) => r.accepted_by === p.id || r.target_provider_id === p.id || (live(r) && matches(r, p) && !dec.includes(r.id))).sort((a, b) => b.id - a.id));
   },
   async myOffers(pid) { myProv(pid); return clone(load().offers.filter((o) => o.provider_id === +pid)); },
@@ -165,11 +180,11 @@ export const demo = {
     const p = myProv(pid); const r = req(rid);
     if (!matches(r, p)) fail('Заявка недоступна'); if (['parts', 'wash'].includes(r.type)) fail('Для этой заявки отправьте предложение');
     if (r.status !== 'new') fail('Заявку уже принял другой исполнитель'); if (!live(r)) fail('Срок заявки истёк');
-    touch(r, { status: 'active', accepted_by: p.id });
+    touch(r, { status: 'active', accepted_by: p.id, handled_by: uid() });
   },
   async decline(rid, pid) { const p = myProv(pid); load().declines.push({ request_id: +rid, provider_id: p.id }); save(); },
   async complete(rid, pid, amount) {
-    const p = myProv(pid); const r = req(rid); if (r.accepted_by !== p.id) fail('Заявка не ваша');
+    const p = myProv(pid, ['owner', 'manager', 'master']); const r = req(rid); if (r.accepted_by !== p.id || (staffRole(p) === 'master' && r.assigned_to !== uid())) fail('Заявка не ваша');
     if (r.type === 'parts') { if (r.status !== 'active') fail('Неверный статус'); touch(r, { status: 'delivered' }); }
     else { if (!['active', 'in_progress', 'waiting_client', 'client_approved'].includes(r.status)) fail('Неверный статус'); touch(r, { status: 'completed', final_amount: amount ? +amount : r.final_amount }); }
   },
@@ -188,13 +203,14 @@ export const demo = {
     touch(r, { status: 'price_offered', accepted_by: p.id, price: +price, assigned_time: new Date(time).toISOString() });
   },
   async washStatus(rid, pid, st) {
-    const p = myProv(pid); const r = req(rid); if (r.accepted_by !== p.id) fail('Заявка не ваша');
+    const p = myProv(pid, ['owner', 'manager', 'master']); const r = req(rid); if (r.accepted_by !== p.id || (staffRole(p) === 'master' && r.assigned_to !== uid())) fail('Заявка не ваша');
     const ok = (r.status === 'client_approved' && st === 'in_progress') || (r.status === 'in_progress' && st === 'waiting_client') || (['waiting_client', 'in_progress'].includes(r.status) && st === 'completed');
     if (!ok) fail('Неверный переход статуса'); touch(r, { status: st });
   },
   async clientContact(rid) {
     const r = req(rid); const p = prov(r.accepted_by);
-    if (!((p && p.owner_id === uid()) || isAdmin(r.city))) fail('Контакт доступен после принятия заявки');
+    const sr = staffRole(p);
+    if (!((sr && (sr !== 'master' || r.assigned_to === uid())) || isAdmin(r.city))) fail('Контакт доступен после принятия заявки');
     if (r.type === 'wash' && ['new', 'price_offered'].includes(r.status) && !isAdmin(r.city)) fail('Контакт доступен после подтверждения клиентом');
     const c = load().profiles[r.user_id]; return { full_name: c.full_name, phone: c.phone, username: c.username };
   },
@@ -215,7 +231,7 @@ export const demo = {
     d.prices = d.prices.filter((p) => p.id !== +xid); save(); },
 
   async registerBusiness(p) {
-    const m = me() || fail('Войдите'); if (!p.name || !p.phone || !p.city) fail('Заполните название, телефон и город');
+    const m = me() || fail('Войдите'); notBlocked(); if (!p.name || !p.phone || !p.city) fail('Заполните название, телефон и город');
     load().registrations.push({ id: id(), user_id: m.id, kind: p.kind, name: p.name, phone: p.phone, address: p.address || '', city: p.city, details: p.details || {}, status: 'pending', created_at: now() }); save();
   },
   async myRegistrations() { return clone(load().registrations.filter((g) => g.user_id === uid()).sort((a, b) => b.id - a.id)); },
@@ -248,7 +264,7 @@ export const demo = {
   async setProviderVerified(pid, v) { const p = prov(pid); if (!p || !isAdmin(p.city)) fail('Нет прав'); p.verified = !!v; save(); },
 
   // ---- обновление 3: фото, чат, статистика, ответы на отзывы
-  async caps() { return { v3: true, v4: true }; },
+  async caps() { return { v3: true, v4: true, v8: true }; },
   async uploadRequestPhoto(blob) { if (!uid()) fail('Войдите'); return putPhoto(`req/${uid()}/${Date.now()}-${Math.random().toString(36).slice(2, 8)}.jpg`, blob); },
   async photoUrls(paths) { const m = photos(); return (paths || []).map((x) => (/^(assets|https?:|data:)/.test(x) ? x : m[x]) || ''); },
   async uploadProviderPhoto(pid, blob) { const p = prov(pid); if (!p || (p.owner_id !== uid() && !isAdmin(p.city))) fail('Нет прав'); return new Promise((ok, no) => { const fr = new FileReader(); fr.onload = () => ok(fr.result); fr.onerror = () => no(new Error('Не удалось прочитать фото')); fr.readAsDataURL(blob); }); },
@@ -262,13 +278,14 @@ export const demo = {
   async pricesFrom(ids) { const out = {}; for (const x of load().prices) if (x.provider_id && ids.includes(x.provider_id)) out[x.provider_id] = Math.min(out[x.provider_id] ?? Infinity, x.price); return out; },
   async getRequest(rid) {
     const r = req(rid); const p = prov(r.accepted_by);
-    if (!(r.user_id === uid() || (p && p.owner_id === uid()) || (r.target_provider_id && prov(r.target_provider_id)?.owner_id === uid()) || isAdmin(r.city)
-      || load().providers.some((pp) => pp.owner_id === uid() && matches(r, pp)))) fail('Заявка не найдена');
+    const boss = (pp) => ['owner', 'manager'].includes(staffRole(pp));
+    if (!(r.user_id === uid() || (p && (boss(p) || (staffRole(p) === 'master' && r.assigned_to === uid()))) || (r.target_provider_id && boss(prov(r.target_provider_id))) || isAdmin(r.city)
+      || load().providers.some((pp) => boss(pp) && matches(r, pp)))) fail('Заявка не найдена');
     return clone(r);
   },
   async messages(rid) { chatRole(rid); return clone(load().messages.filter((m) => m.request_id === +rid)); },
   async sendMessage(rid, body) {
-    const role = chatRole(rid); const r = req(rid);
+    const role = chatRole(rid); const r = req(rid); notBlocked();
     if (role === 'admin') fail('Чат доступен клиенту и исполнителю, который взял заявку');
     if (r.status === 'cancelled') fail('Чат по этой заявке закрыт');
     if (!(body || '').trim()) fail('Пустое сообщение');
@@ -282,11 +299,58 @@ export const demo = {
       load().messages.push(a); save(); bus.forEach((f) => f(a)); }, 2500);
     return clone(m);
   },
+  // ---- обновление 6: админы и права, пользователи, настройки, журнал, сотрудники
+  async adminList() { if (!isAdmin()) fail('Нет прав'); return clone(Object.values(load().profiles).filter((u) => ['global_admin', 'regional_admin'].includes(u.role))); },
+  async adminUsers(q = '') {
+    if (!isAdmin()) fail('Нет прав'); const d = load(); const s2 = (q || '').toLowerCase().trim();
+    return clone(Object.values(d.profiles).filter((u) => (isGlobal() || isAdmin(u.city)) && !u.deleted_at && (!s2 || [u.username, u.full_name, u.phone].some((x) => (x || '').toLowerCase().includes(s2))))
+      .map((u) => ({ ...u, requests: d.requests.filter((r) => r.user_id === u.id).length, orgs: d.providers.filter((p) => p.owner_id === u.id).length })));
+  },
+  async setRole(userId, role, city = null) {
+    if (!isGlobal()) fail('Назначать администраторов может только главный администратор');
+    const u = load().profiles[userId] || fail('Пользователь не найден');
+    if (role === 'regional_admin' && !city) fail('Выберите город');
+    if (u.role === 'global_admin' && role !== 'global_admin' && Object.values(load().profiles).filter((x) => x.role === 'global_admin').length <= 1) fail('Нельзя снять последнего главного администратора');
+    logA('role', userId, role === 'regional_admin' ? city : null, { from: u.role, to: role, city, username: u.username });
+    u.role = role; u.managed_city = role === 'regional_admin' ? city : null; save(); return 'Готово';
+  },
+  async blockUser(userId, block, reason = '') {
+    const u = load().profiles[userId] || fail('Пользователь не найден');
+    if (!(isGlobal() || isAdmin(u.city))) fail('Нет прав'); if (userId === uid()) fail('Нельзя заблокировать себя');
+    if (u.role !== 'client') fail('Сначала снимите с пользователя права администратора'); if (block && !reason.trim()) fail('Укажите причину блокировки');
+    u.blocked_at = block ? now() : null; u.blocked_reason = block ? reason.trim() : null; logA(block ? 'block' : 'unblock', userId, u.city, { reason }); save();
+  },
+  async adminLog() {
+    if (!isAdmin()) fail('Нет прав'); const d = load(); const P = (x) => x && d.profiles[x] ? { username: d.profiles[x].username, full_name: d.profiles[x].full_name } : null;
+    return clone((d.admin_log || []).filter((x) => isGlobal() || (x.city && isAdmin(x.city))).slice(0, 100).map((x) => ({ ...x, actor: P(x.actor_id), target: P(x.target_user) })));
+  },
+  async settings(city = '') { return clone((load().settings || []).filter((x) => x.city === '' || x.city === (city || ''))); },
+  async setSetting(key, city, value) {
+    const c = city || ''; if (!c && !isGlobal()) fail('Общие настройки меняет только главный администратор'); if (c && !isAdmin(c)) fail('Нет прав на этот город');
+    const d = load(); d.settings = (d.settings || []).filter((x) => !(x.key === key && x.city === c));
+    if (value !== null && value !== '') d.settings.push({ key, city: c, value, updated_at: now() }); logA('setting', null, c || null, { key, value }); save();
+  },
+  async cityNotice(city) { const v = setting('city_notice', city); return typeof v === 'string' ? v : ''; },
+  async staffList(pid) {
+    const d = load(); const p = prov(pid) || fail('Не найдено'); const P = (x) => d.profiles[x] || {};
+    const cnt = (u) => d.requests.filter((r) => r.accepted_by === p.id && (r.handled_by === u || r.assigned_to === u)).length;
+    return clone([{ user_id: p.owner_id, username: P(p.owner_id).username, full_name: P(p.owner_id).full_name, role: 'owner', handled: cnt(p.owner_id) },
+      ...(d.staff || []).filter((x) => x.provider_id === p.id).map((x) => ({ user_id: x.user_id, username: P(x.user_id).username, full_name: P(x.user_id).full_name, role: x.role, created_at: x.created_at, handled: cnt(x.user_id) }))]);
+  },
+  async staffAdd(pid, username, role) {
+    const d = load(); const p = prov(pid); if (!p || p.owner_id !== uid()) fail('Сотрудников добавляет только владелец');
+    const u = Object.values(d.profiles).find((x) => (x.username || '').toLowerCase() === String(username || '').replace(/^@/, '').trim().toLowerCase()) || fail('Пользователь не найден: пусть сначала войдёт на сайт через Telegram');
+    if (u.id === uid()) fail('Вы уже владелец'); d.staff ||= []; d.staff = d.staff.filter((x) => !(x.provider_id === p.id && x.user_id === u.id));
+    d.staff.push({ provider_id: p.id, user_id: u.id, role, created_at: now() }); logA('staff_add', u.id, p.city, { provider: p.id, role }); save(); return 'Готово';
+  },
+  async staffRemove(pid, userId) { const d = load(); const p = prov(pid); if (!p || (p.owner_id !== uid() && userId !== uid())) fail('Нет прав'); d.staff = (d.staff || []).filter((x) => !(x.provider_id === p.id && x.user_id === userId)); logA('staff_remove', userId, p.city, { provider: p.id }); save(); },
+  async assign(rid, userId) { const r = req(rid); const p = prov(r.accepted_by); if (!['owner', 'manager'].includes(staffRole(p))) fail('Нет прав');
+    if (userId && userId !== p.owner_id && !(load().staff || []).some((x) => x.provider_id === p.id && x.user_id === userId)) fail('Это не сотрудник организации'); r.assigned_to = userId || null; save(); },
   subscribeInbox(cb) { const f = (m) => cb(m); bus.add(f); return () => bus.delete(f); },
   subscribeMessages(rid, cb) { const f = (m) => { if (m.request_id === +rid) cb(m); }; bus.add(f); return () => bus.delete(f); },
   async replyReview(rvid, text) {
     const x = load().reviews.find((r) => r.id === +rvid) || fail('Отзыв не найден');
-    if (!(prov(x.provider_id)?.owner_id === uid() || isAdmin())) fail('Нет прав');
+    if (!(['owner', 'manager'].includes(staffRole(prov(x.provider_id))) || isAdmin(prov(x.provider_id)?.city))) fail('Нет прав');
     x.reply = (text || '').trim().slice(0, 1000) || null; x.reply_at = now(); save();
   },
 
@@ -360,7 +424,7 @@ function putPhoto(path, blob) {
 function chatRole(rid) {
   const r = req(rid); const p = prov(r.accepted_by);
   if (r.user_id === uid()) return 'client';
-  if (p && p.owner_id === uid()) return 'provider';
+  const sr = staffRole(p); if (sr && (sr !== 'master' || r.assigned_to === uid())) return 'provider';
   if (isAdmin(r.city)) return 'admin';
   fail('Чат недоступен');
 }

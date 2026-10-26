@@ -39,7 +39,11 @@ function openNow(wh) {
   const n = new Date(), t = n.getHours() * 60 + n.getMinutes(), a = +m[1] * 60 + +m[2], b = +m[3] * 60 + +m[4];
   return b > a ? t >= a && t < b : t >= a || t < b;
 }
-const openChip = (wh) => { const o = openNow(wh); return o == null ? '' : o ? '<span class="chip-s ok">● Открыто</span>' : '<span class="chip-s off">● Закрыто</span>'; };
+const DOW = ['Вс', 'Пн', 'Вт', 'Ср', 'Чт', 'Пт', 'Сб'];
+const openChip = (wh, p = null) => {
+  if (p?.paused) return '<span class="chip-s off">⏸ Не принимает заявки</span>';
+  if (p?.days_off?.includes(new Date().getDay())) return '<span class="chip-s off">● Сегодня выходной</span>';
+  const o = openNow(wh); return o == null ? '' : o ? '<span class="chip-s ok">● Открыто</span>' : '<span class="chip-s off">● Закрыто</span>'; };
 
 // избранное — хранится в браузере
 const favs = () => { try { return JSON.parse(localStorage.getItem('am24-fav')) || []; } catch { return []; } };
@@ -73,7 +77,7 @@ function lightbox(src) {
 }
 
 // ------------------------------------------------------------ состояние
-const S = { ref: null, me: null, city: localStorage.getItem('am24-city') || CONFIG.DEFAULT_CITY, myProv: [], timer: null, caps: { v3: false, v4: false }, cleanups: [], installEvt: null };
+const S = { ref: null, me: null, city: localStorage.getItem('am24-city') || CONFIG.DEFAULT_CITY, myProv: [], timer: null, caps: { v3: false, v4: false, v8: false }, cleanups: [], installEvt: null };
 const isAdmin = () => ['global_admin', 'regional_admin'].includes(S.me?.role);
 const catName = (id) => S.ref.categories.find((c) => c.id === +id)?.name || '';
 const siteUrl = () => location.origin + location.pathname;
@@ -185,7 +189,8 @@ async function home() {
   const favList = fv.length ? (await Promise.all(fv.slice(0, 6).map((id) => api.getProvider(id).catch(() => null)))).filter(Boolean) : [];
   const onboard = localStorage.getItem('am24-onboarded') ? '' : `<div class="card onboard" id="onb"><button class="x" id="onbX" aria-label="Скрыть">✕</button><h3>Как пользоваться — 3 шага</h3>
     <div class="steps3"><div><b>1</b>Выберите услугу или опишите проблему в поиске</div><div><b>2</b>Мастера города увидят заявку и откликнутся</div><div><b>3</b>Общайтесь в чате, после работы поставьте оценку</div></div></div>`;
-  return `<section class="hero" style="background-image:url('assets/img/hero.webp')"><div class="hero-in"><span class="eyebrow">📍 ${esc(S.city)} · ${L('бесплатно для автовладельцев', 'көлік иелері үшін тегін')}</span>
+  const notice = S.caps.v8 ? await api.cityNotice(S.city).catch(() => '') : '';
+  return `${blockedBanner()}${notice ? `<div class="notice warn" role="status">📢 <b>${esc(S.city)}:</b> <span data-ugc>${esc(notice)}</span></div>` : ''}<section class="hero" style="background-image:url('assets/img/hero.webp')"><div class="hero-in"><span class="eyebrow">📍 ${esc(S.city)} · ${L('бесплатно для автовладельцев', 'көлік иелері үшін тегін')}</span>
     <h1>Помощь с машиной —<br>за пару минут</h1><p>${L(`${esc(CONFIG.SITE_TAGLINE)}. Опишите, что случилось, — мастера откликнутся сами.`, 'ҚКС, эвакуатор, жуу, қосалқы бөлшектер және шығатын шеберлер — бір жерде. Не болғанын сипаттаңыз — шеберлер өздері жауап береді.')}</p>
     <div class="search" role="search"><input id="q" type="search" placeholder="Например: стучит подвеска, сел аккумулятор, нужна мойка" aria-label="Что случилось с машиной?" autocomplete="off"><div id="sugg" class="sugg" role="listbox"></div></div>
     <div class="row"><a class="btn p" href="#/new/sto">🆕 Новая заявка</a><a class="btn" href="#/catalog/sto">🔎 Выбрать мастера</a><a class="btn" href="#/prices">💰 Цены</a></div></div></section>
@@ -230,7 +235,7 @@ const provSpec = (p) => `${p.kind === 'sto' && p.specs?.length ? `<div class="sm
 const provCard = (p, extra = '', from = null) => `<div class="card pcard">
   <a class="pthumb" href="#/provider/${p.id}" aria-hidden="true" tabindex="-1">${p.photos?.length ? `<img src="${esc(p.photos[0])}" alt="" loading="lazy">` : `<span>${KINDS[p.kind].icon}</span>`}</a>
   ${favBtn(p)}<div class="pbody"><div><b><a href="#/provider/${p.id}">${esc(p.name)}</a></b> ${verifiedBadge(p)}</div>
-  <div class="small">${stars(p.rating)} <span class="muted">${Number(p.rating || 0).toFixed(1)} · ${p.reviews_count || 0} отз.</span> ${openChip(p.working_hours)} ${from ? `<span class="chip-s">от ${money(from)}</span>` : ''}</div>
+  <div class="small">${stars(p.rating)} <span class="muted">${Number(p.rating || 0).toFixed(1)} · ${p.reviews_count || 0} отз.</span> ${openChip(p.working_hours, p)} ${from ? `<span class="chip-s">от ${money(from)}</span>` : ''}</div>
   <div class="small muted">${provMeta(p)}</div>${provSpec(p)}
   <div class="row" style="margin-top:8px">${extra}</div></div></div>`;
 
@@ -275,7 +280,7 @@ async function provider(id) {
   return `<a href="#/catalog/${p.kind}" class="small">← ${KINDS[p.kind].title}</a>
    ${p.photos?.length ? `<div class="gallery">${p.photos.map((u, i) => `<button class="gph" data-full="${esc(u)}" aria-label="Фото ${i + 1}"><img src="${esc(u)}" alt="Фото ${i + 1}: ${esc(p.name)}" ${i ? 'loading="lazy"' : ''}></button>`).join('')}</div>` : `<div class="gallery none"><img src="${IMG[p.kind]}" alt=""></div>`}
    <div class="card"><div class="row between"><h1 style="margin:0">${esc(p.name)}</h1>${favBtn(p)}</div>
-    <div class="row small">${verifiedBadge(p)}<span>${KINDS[p.kind].icon} ${KINDS[p.kind].title}</span>${openChip(p.working_hours)}</div>
+    <div class="row small">${verifiedBadge(p)}<span>${KINDS[p.kind].icon} ${KINDS[p.kind].title}</span>${openChip(p.working_hours, p)}</div>
     <div class="row" style="margin:10px 0">${stars(p.rating)} <b>${Number(p.rating || 0).toFixed(1)}</b> <span class="muted small">${p.reviews_count || 0} отзывов</span></div>
     <div class="stats">${st.completed != null ? `<div><b>${st.completed}</b><small>выполнено заявок</small></div>` : ''}${st.response_min != null ? `<div><b>~${Math.max(1, st.response_min)} мин</b><small>обычно отвечает ${tip('Медиана времени от заявки до принятия по последним заявкам')}</small></div>` : ''}${st.price_from ? `<div><b>от ${money(st.price_from)}</b><small>по прайсу</small></div>` : ''}</div>
     ${p.about ? `<p>${esc(p.about)}</p>` : ''}
@@ -342,7 +347,7 @@ async function newRequest(kind = 'sto', q) {
       <label>Где вы?</label><div class="row"><input name="location" class="grow" required placeholder="Адрес или ориентир" value="${esc(D.location || '')}"><button type="button" id="geo">📍 Моё место</button></div>
       <input type="hidden" name="lat"><input type="hidden" name="lon">${car}<label>Опишите ситуацию</label><textarea name="description" rows="2" placeholder="Например: ключи в закрытой машине">${esc(desc)}</textarea>${photo}`;
   }
-  return `<h1>${KINDS[kind].icon} ${KINDS[kind].title}</h1>${tabs}${warn}${prev ? '<div class="notice">🔁 Заполнили по прошлой заявке — проверьте и отправьте.</div>' : ''}
+  return `<h1>${KINDS[kind].icon} ${KINDS[kind].title}</h1>${tabs}${blockedBanner()}${warn}${prev ? '<div class="notice">🔁 Заполнили по прошлой заявке — проверьте и отправьте.</div>' : ''}
     <form id="reqForm" class="card" data-kind="${kind}"><div class="small muted">Город: <b>${esc(S.city)}</b> (меняется вверху)</div>${body}
     <button class="p block" style="margin-top:16px">Отправить заявку</button><p class="small muted center" style="margin:8px 0 0">Бесплатно. Телефон увидит только тот, кто возьмёт заявку.</p>
     <p class="small muted center" style="margin:4px 0 0">${L('АвтоМастер24 — посредник: договор на услугу вы заключаете с исполнителем.', 'АвтоМастер24 — делдал: қызмет шартын орындаушымен жасасасыз.')} <a href="${legal('terms')}">${L('Условия', 'Шарттар')}</a> · <a href="${legal('privacy')}">${L('Данные', 'Деректер')}</a></p></form>`;
@@ -565,12 +570,15 @@ login.after = (v) => {
 async function profile() {
   if (!S.me) return login();
   const regs = await api.myRegistrations();
-  return `<h1>Профиль</h1><form class="card" id="prf"><label>Имя</label><input name="full_name" value="${esc(S.me.full_name || '')}" required>
+  return `<h1>Профиль</h1>${blockedBanner()}<form class="card" id="prf"><label>Имя</label><input name="full_name" value="${esc(S.me.full_name || '')}" required>
     <label>Телефон (Казахстан)</label><input name="phone" type="tel" value="${esc(S.me.phone || '')}" placeholder="+7 7XX XXX XX XX">
     <label>Город</label><select name="city">${S.ref.cities.filter((c) => c.active).map((c) => `<option ${c.name === (S.me.city || S.city) ? 'selected' : ''}>${esc(c.name)}</option>`).join('')}</select>
     ${S.caps.v4 ? '' : `<label class="check"><input type="checkbox" name="consent" ${S.me.consent ? 'checked' : ''}> <span>Согласен(на) на обработку персональных данных (имя и телефон) для передачи исполнителю, который примет мою заявку. Закон РК «О персональных данных и их защите».</span></label>`}
     <button class="p" style="margin-top:12px">Сохранить</button></form>
     ${notifyCard()}
+    <div class="card" id="uiCard"><h3>⚙️ Язык и оформление</h3><div class="row"><button class="btn sm ${isKK() ? '' : 'p'}" data-lang="ru">Русский</button><button class="btn sm ${isKK() ? 'p' : ''}" data-lang="kk">Қазақша</button>
+      <button class="btn sm" data-theme-t>${document.documentElement.dataset.theme === 'light' ? '🌙 Тёмная тема' : '☀️ Светлая тема'}</button></div>
+      <p class="small muted">Город выбирается в форме выше и в шапке. Роль: <b>${esc(roleName(S.me))}</b>${S.myProv.length ? ` · организаций: ${S.myProv.length}` : ''}.</p></div>
     ${S.caps.v4 ? await privacyCard() : ''}
     ${regs.length ? `<div class="card"><h3>Мои заявки на подключение бизнеса</h3>${regs.map((g) => `<div class="row between small"><span>${KINDS[g.kind].icon} ${esc(g.name)}</span>${badge(g.status)}</div>${g.reason ? `<div class="small muted">${esc(g.reason)}</div>` : ''}`).join('')}</div>` : ''}
     <div class="card row">${S.myProv.length ? '<a class="btn" href="#/cabinet">🛠 Кабинет исполнителя</a>' : '<a class="btn" href="#/business">💼 Подключить бизнес</a>'}${isAdmin() ? '<a class="btn" href="#/admin">🛡 Админ</a>' : ''}<a class="btn" href="#/garage">🚗 Гараж</a>
@@ -580,6 +588,8 @@ profile.after = (v) => {
   const f = $('#prf', v); if (!f) return login.after(v);
   f.onsubmit = (e) => { e.preventDefault(); const d = formData(f); act($('button', f), async () => { S.me = await api.updateProfile({ ...d, consent: S.caps.v4 ? !!S.me.consent : !!d.consent }); S.city = d.city; localStorage.setItem('am24-city', S.city); }, 'Профиль сохранён'); };
   privacyAfter(v); notifyAfter(v);
+  $$('[data-lang]', v).forEach((b) => b.onclick = () => setLang(b.dataset.lang));
+  const tt = $('[data-theme-t]', v); if (tt) tt.onclick = () => { $('#themeBtn').click(); render(); };
   installBtns(v);
   $('#logout', v).onclick = async () => { await api.logout(); await refreshMe(); location.hash = '#/'; };
   if ($('#delData', v)) $('#delData', v).onclick = () => { if (confirm('Удалить телефон и согласие? Заявки и отзывы сохранятся.')) act(null, async () => { await api.deleteMyData(); await refreshMe(); }, 'Данные удалены'); };
@@ -619,10 +629,14 @@ async function cabinet(_, q) {
   S.myProv = await api.myProviders();
   if (!S.myProv.length) return `<h1>Кабинет исполнителя</h1><div class="card"><p>У вас пока нет подключённой организации.</p><a class="btn p" href="#/business">Подключить бизнес</a></div>`;
   const p = S.myProv.find((x) => x.id === +q.p) || S.myProv[0];
-  const tab = q.t || 'feed';
+  const role = p.my_role || 'owner', owner = role === 'owner', boss = owner || role === 'manager';
+  const allowed = { owner: ['feed', 'prices', 'reviews', 'org', 'settings', 'link'], manager: ['feed', 'reviews', 'link'], master: ['feed'] }[role] || ['feed'];
+  const tab = allowed.includes(q.t) ? q.t : 'feed';
   const head = `<h1>🛠 Кабинет</h1><div class="tabs">${S.myProv.map((x) => `<a href="#/cabinet?p=${x.id}&t=${tab}" class="${x.id === p.id ? 'on' : ''}">${KINDS[x.kind].icon} ${esc(x.name)}</a>`).join('')}</div>
     ${p.is_active ? '' : '<div class="notice warn">Организация отключена администратором — новые заявки не приходят.</div>'}
-    <div class="tabs">${[['feed', '📥 Заявки'], ...(p.kind === 'sto' ? [['prices', '💰 Прайс']] : []), ['reviews', '⭐ Отзывы'], ['org', '🏢 Профиль'], ['link', '🔗 Ссылка']].map(([t, n]) => `<a href="#/cabinet?p=${p.id}&t=${t}" class="${t === tab ? 'on' : ''}">${n}</a>`).join('')}</div>`;
+    ${p.paused ? `<div class="notice warn">⏸ Приём новых заявок на паузе. ${owner ? `<a href="#/cabinet?p=${p.id}&t=settings">Снять паузу</a>` : 'Снять может владелец.'}</div>` : ''}
+    ${role !== 'owner' ? `<p class="small muted">Ваша роль: <b>${role === 'manager' ? 'менеджер' : 'мастер'}</b> — ${role === 'manager' ? 'принимаете заявки, ведёте чат, поручаете мастерам, отвечаете на отзывы' : 'видите поручённые вам заявки, чат с клиентом и завершаете работу'}.</p>` : ''}
+    <div class="tabs">${[['feed', role === 'master' ? '📥 Мои поручения' : '📥 Заявки'], ...(p.kind === 'sto' ? [['prices', '💰 Прайс']] : []), ['reviews', '⭐ Отзывы'], ['org', '🏢 Профиль'], ...(S.caps.v8 ? [['settings', '⚙ Настройки']] : []), ['link', '🔗 Ссылка']].filter(([t]) => allowed.includes(t)).map(([t, n]) => `<a href="#/cabinet?p=${p.id}&t=${t}" class="${t === tab ? 'on' : ''}">${n}</a>`).join('')}</div>`;
   if (tab === 'prices') {
     const pr = await api.providerPrices(p.id);
     return `${head}<div class="card"><h3>Мой прайс</h3>${pr.length ? `<table><tr><th>Услуга</th><th>Авто</th><th>Цена</th><th></th></tr>${pr.map((x) => `<tr><td>${esc(x.service)}</td><td>${esc([x.brand, x.model].filter(Boolean).join(' ') || 'Все')}${x.year_from ? ` ${x.year_from}–${x.year_to || ''}` : ''}</td><td>${money(x.price)}</td><td><button class="danger" data-dp="${x.id}">✕</button></td></tr>`).join('')}</table>` : '<p class="muted">Прайс пуст. Клиенты находят вас в «Узнать цены» по этим строкам.</p>'}</div>
@@ -651,11 +665,13 @@ async function cabinet(_, q) {
         <div class="photos">${(p.photos || []).map((u, i) => `<span class="ph"><img src="${esc(u)}" alt="Фото ${i + 1}"><button type="button" class="rm" data-delph="${i}" aria-label="Удалить фото">✕</button></span>`).join('')}</div>
         <label class="drop"><input type="file" id="orgPh" accept="image/*" multiple hidden><span>📷 Добавить фото</span></label></div>` : ''}`;
   }
+  if (tab === 'settings') return head + await orgSettings(p);
   if (tab === 'link') {
     const url = `${siteUrl()}#/provider/${p.id}`;
     return `${head}<div class="card"><h3>Ваша визитка</h3><p>Отправляйте клиентам — по ссылке они видят ваши контакты, рейтинг и сразу оставляют заявку именно вам.</p><input readonly value="${esc(url)}" id="myLink"><div class="row" style="margin-top:10px"><button class="p" id="copyLink">Скопировать</button><a class="btn" href="https://t.me/share/url?url=${encodeURIComponent(url)}" target="_blank" rel="noopener">Поделиться в Telegram</a><a class="btn" href="https://wa.me/?text=${encodeURIComponent(url)}" target="_blank" rel="noopener">WhatsApp</a></div></div>`;
   }
-  const [feed, myOffers] = await Promise.all([api.providerFeed(p.id), p.kind === 'parts' ? api.myOffers(p.id) : []]);
+  const [feed, myOffers, staff] = await Promise.all([api.providerFeed(p.id), p.kind === 'parts' && boss ? api.myOffers(p.id) : [], boss && S.caps.v8 ? api.staffList(p.id).catch(() => []) : []]);
+  const who = (id) => { const x = staff.find((y) => y.user_id === id); return x ? (x.full_name || '@' + x.username) : ''; };
   autoRefresh();
   const groups = { 'Новые': feed.filter((r) => ['new', 'offers'].includes(effStatus(r)) && r.accepted_by !== p.id),
     'В работе': feed.filter((r) => r.accepted_by === p.id && !['completed', 'cancelled'].includes(r.status)),
@@ -663,9 +679,10 @@ async function cabinet(_, q) {
   const card = (r) => {
     const st = effStatus(r), mine = r.accepted_by === p.id, off = myOffers.find((o) => o.request_id === r.id);
     let a = '';
-    if (!mine && ['tow', 'sto', 'urgent'].includes(r.type) && st === 'new') a = `<button class="ok" data-acc="${r.id}">✅ Принять</button><button class="ghost" data-dec="${r.id}">Отклонить</button>`;
-    if (r.type === 'parts' && ['new', 'offers'].includes(st) && !mine) a = `<form class="row grow" data-offer-form="${r.id}"><input name="price" type="number" min="1" placeholder="Цена, ₸" required value="${off ? off.price : ''}" style="max-width:130px"><input name="comment" class="grow" placeholder="Оригинал/аналог, наличие" value="${esc(off?.comment || '')}"><button class="p">${off ? 'Изменить' : 'Предложить'}</button></form>${off ? '<span class="small muted">Ваше предложение отправлено, клиент выбирает</span>' : ''}<button class="ghost" data-dec="${r.id}">Скрыть</button>`;
-    if (r.type === 'wash' && ['new', 'price_offered'].includes(r.status)) {
+    if (role === 'master') { /* мастер: только порученные — завершить, статус мойки, чат, контакт */ }
+    else if (!mine && ['tow', 'sto', 'urgent'].includes(r.type) && st === 'new') a = `<button class="ok" data-acc="${r.id}">✅ Принять</button><button class="ghost" data-dec="${r.id}">Отклонить</button>`;
+    if (boss && r.type === 'parts' && ['new', 'offers'].includes(st) && !mine) a = `<form class="row grow" data-offer-form="${r.id}"><input name="price" type="number" min="1" placeholder="Цена, ₸" required value="${off ? off.price : ''}" style="max-width:130px"><input name="comment" class="grow" placeholder="Оригинал/аналог, наличие" value="${esc(off?.comment || '')}"><button class="p">${off ? 'Изменить' : 'Предложить'}</button></form>${off ? '<span class="small muted">Ваше предложение отправлено, клиент выбирает</span>' : ''}<button class="ghost" data-dec="${r.id}">Скрыть</button>`;
+    if (boss && r.type === 'wash' && ['new', 'price_offered'].includes(r.status)) {
       const t = (r.assigned_time || r.desired_time || new Date().toISOString());
       const local = new Date(new Date(t).getTime() - new Date().getTimezoneOffset() * 60000).toISOString().slice(0, 16);
       a = `<form class="row grow" data-wash-form="${r.id}"><input name="price" type="number" min="1" placeholder="Цена, ₸" required value="${r.price || ''}" style="max-width:120px"><input name="time" type="datetime-local" required value="${local}" style="max-width:220px"><button class="p">${r.status === 'price_offered' ? 'Изменить' : 'Предложить цену и время'}</button></form>${r.status === 'price_offered' ? '<span class="small muted">Ждём подтверждения клиента</span>' : ''}`;
@@ -674,7 +691,9 @@ async function cabinet(_, q) {
     if (mine && r.type !== 'wash' && r.status === 'active') a += `<form class="row" data-done="${r.id}">${r.type !== 'parts' ? `<input name="amount" type="number" min="0" placeholder="Сумма, ₸" style="max-width:130px" value="${r.final_amount || ''}">` : ''}<button class="ok">${r.type === 'parts' ? '📦 Передал клиенту' : '✅ Завершить'}</button></form>`;
     if (mine && !['completed', 'cancelled', 'new', 'price_offered'].includes(r.status)) a += `<button data-contact="${r.id}">👤 Контакт клиента</button><span data-c="${r.id}"></span>`;
     if (mine && S.caps.v3 && r.status !== 'cancelled') a += `<a class="btn sm" href="#/chat/${r.id}">💬 Чат с клиентом</a>`;
-    return `<div class="card"><div class="row between"><b>${reqTitle(r)}</b>${badge(st)}</div>${reqInfo(r)}<div class="row" style="margin-top:10px">${a}</div></div>`;
+    const team = mine && staff.length > 1 ? `<div class="small muted team">${r.handled_by ? `Принял: <b>${esc(who(r.handled_by) || '—')}</b>` : ''}
+      ${!['completed', 'cancelled'].includes(r.status) ? `<label class="inline">Поручить: <select data-assign="${r.id}"><option value="">— не поручено —</option>${staff.map((x) => `<option value="${esc(x.user_id)}" ${x.user_id === r.assigned_to ? 'selected' : ''}>${esc(x.full_name || '@' + x.username)} (${{ owner: 'владелец', manager: 'менеджер', master: 'мастер' }[x.role]})</option>`).join('')}</select></label>` : r.assigned_to ? ` · Выполнял: <b>${esc(who(r.assigned_to))}</b>` : ''}</div>` : '';
+    return `<div class="card"><div class="row between"><b>${reqTitle(r)}</b>${badge(st)}</div>${reqInfo(r)}${team}<div class="row" style="margin-top:10px">${a}</div></div>`;
   };
   const done = feed.filter((r) => r.accepted_by === p.id && r.status === 'completed');
   const tips = [!p.photos?.length && S.caps.v3 && 'добавьте фото', !p.about && S.caps.v3 && 'напишите пару слов о себе', !p.working_hours && 'укажите часы работы'].filter(Boolean);
@@ -693,6 +712,8 @@ cabinet.after = (v, _, q) => {
   $$('[data-done]', v).forEach((f) => f.onsubmit = (e) => { e.preventDefault(); const d = formData(f); act($('button', f), () => api.complete(+f.dataset.done, pid, d.amount), 'Готово'); });
   $$('[data-contact]', v).forEach((b) => b.onclick = async () => { try { const c = await api.clientContact(+b.dataset.contact); $(`[data-c="${b.dataset.contact}"]`, v).innerHTML = `<b>${esc(c.full_name)}</b> ${tel(c.phone)} ${c.username ? `<a href="https://t.me/${esc(c.username)}" target="_blank" rel="noopener">✈️ @${esc(c.username)}</a>` : ''}`; } catch (e) { toast(e.message, true); } });
   $$('[data-dp]', v).forEach((b) => b.onclick = () => act(b, () => api.deletePrice(+b.dataset.dp), 'Удалено'));
+  $$('[data-assign]', v).forEach((sl) => sl.onchange = () => act(null, () => api.assign(+sl.dataset.assign, sl.value), sl.value ? 'Заявка поручена' : 'Поручение снято'));
+  orgSettingsAfter(v, pid);
   const pf = $('#prForm', v); if (pf) pf.onsubmit = (e) => { e.preventDefault(); const d = formData(pf); act($('button', pf), () => api.addPrice({ provider_id: pid, service: d.service, brand: d.brand || '', model: d.model || '', year_from: d.year_from ? +d.year_from : null, year_to: d.year_to ? +d.year_to : null, price: +d.price }), 'Цена добавлена'); };
   $$('[data-reply]', v).forEach((f) => f.onsubmit = (e) => { e.preventDefault(); act($('button', f), () => api.replyReview(+f.dataset.reply, f.t.value), 'Ответ сохранён'); });
   const cur = S.myProv.find((x) => x.id === pid);
@@ -713,10 +734,17 @@ cabinet.after = (v, _, q) => {
 async function admin(_, q) {
   if (!isAdmin()) return `<h1>Админ-панель</h1>${S.me ? '<div class="card">Нет доступа. Админа назначают в базе (см. README).</div>' : needLogin('админ-панели')}`;
   const tab = q.t || 'stats';
-  const head = `<h1>🛡 Админ-панель</h1>${S.me.role === 'regional_admin' ? `<p class="small muted">Регион: <b>${esc(S.me.managed_city || '')}</b></p>` : ''}<div class="tabs">${[['stats', '📊 Статистика'], ['regs', '🗂 Регистрации'], ['reqs', '📋 Заявки'], ['reviews', '⭐ Отзывы'], ['provs', '🏢 Исполнители'], ...(S.caps.v4 ? [['complaints', '⚑ Обращения']] : []), ...(S.me.role === 'global_admin' ? [['cities', '🏙 Города']] : [])].map(([t, n]) => `<a href="#/admin?t=${t}" class="${t === tab ? 'on' : ''}">${n}</a>`).join('')}</div>`;
+  const G = S.me.role === 'global_admin';
+  const head = `<h1>🛡 Админ-панель</h1>${!G ? `<p class="small muted">Регион: <b>${esc(S.me.managed_city || '')}</b></p>` : ''}<div class="tabs">${[['stats', '📊 Обзор'], ['regs', '🗂 Регистрации'], ['reqs', '📋 Заявки'], ['reviews', '⭐ Отзывы'], ['provs', '🏢 Исполнители'], ...(S.caps.v4 ? [['complaints', '⚑ Обращения']] : []),
+    ['users', '👤 Пользователи'], ...(G ? [['admins', '👥 Админы и права']] : []), ['settings', '⚙️ Настройки'], ['log', '📜 Журнал'], ...(G ? [['cities', '🏙 Города']] : [])].map(([t, n]) => `<a href="#/admin?t=${t}" class="${t === tab ? 'on' : ''}">${n}</a>`).join('')}</div>`;
   if (tab === 'stats') { const s = await api.adminStats();
     const L = { users: 'Пользователей', providers: 'Исполнителей', requests: 'Заявок всего', active: 'Активных заявок', completed: 'Выполнено', turnover: 'Оборот по выполненным', pending_regs: 'Ждут одобрения', pending_reviews: 'Отзывы на модерации' };
-    return head + `<div class="grid">${Object.entries(L).map(([k, n]) => `<div class="tile"><small>${n}</small><b class="price">${k === 'turnover' ? money(s[k]) : s[k]}</b></div>`).join('')}</div>`; }
+    return head + adminRoleCard() + `<div class="grid">${Object.entries(L).map(([k, n]) => `<div class="tile"><small>${n}</small><b class="price">${k === 'turnover' ? money(s[k]) : s[k]}</b></div>`).join('')}</div>`; }
+  if (['users', 'admins', 'settings', 'log'].includes(tab) && !S.caps.v8) return head + `<div class="card"><h3>Нужно обновить базу</h3><p>Этот раздел заработает после применения файла <code>supabase/08_admin.sql</code> в Supabase → SQL Editor.</p></div>`;
+  if (tab === 'users') return head + await adminUsersTab(q);
+  if (tab === 'admins' && G) return head + await adminAdminsTab();
+  if (tab === 'settings') return head + await adminSettingsTab(q);
+  if (tab === 'log') return head + await adminLogTab();
   if (tab === 'regs') { const g = await api.adminRegistrations();
     return head + (g.map((x) => `<div class="card"><div class="row between"><b>${KINDS[x.kind].icon} ${esc(x.name)}</b>${badge(x.status)}</div><div class="small">${esc(x.city)} · ${esc(x.address)} · ${tel(x.phone)} · ${dt(x.created_at)}</div>
       ${x.details?.specs?.length ? `<div class="small muted">${x.details.specs.map(catName).join(', ')}</div>` : ''}${x.details?.service_type ? `<div class="small muted">${URGENT[x.details.service_type]}</div>` : ''}
@@ -742,6 +770,7 @@ admin.after = (v) => {
   $$('[data-pv]', v).forEach((b) => b.onclick = () => { const [id, on] = b.dataset.pv.split(':'); act(b, () => api.setProviderVerified(+id, on === '1'), on === '1' ? 'Отмечен как проверенный' : 'Отметка снята'); });
   $$('[data-ca]', v).forEach((b) => b.onclick = () => { const [id, on] = b.dataset.ca.split(':'); act(b, async () => { await api.setCityActive(+id, on === '1'); S.ref = await api.ref(); }, 'Готово'); });
   $$('[data-ans]', v).forEach((f) => f.onsubmit = (e) => { e.preventDefault(); const d = formData(f); act($('button', f), () => api.answerComplaint(+f.dataset.ans, d.status, d.answer), 'Ответ сохранён'); });
+  adminRolesAfter(v);
   const cf = $('#cityForm', v); if (cf) cf.onsubmit = (e) => { e.preventDefault(); act($('button', cf), async () => { await api.addCity(cf.querySelector('[name=name]').value.trim()); S.ref = await api.ref(); }, 'Город добавлен'); };
 };
 
@@ -862,6 +891,143 @@ function countVisit() {
   localStorage.setItem('am24-hit', day); api.hit().catch(() => {});
 }
 
+// ------------------------------------------------------------ роли и права (Обновление 6)
+const ROLE_N = { client: 'Пользователь', regional_admin: 'Региональный админ', global_admin: 'Главный админ' };
+const roleName = (u) => u?.role === 'regional_admin' ? `${ROLE_N.regional_admin} (${u.managed_city || '—'})` : ROLE_N[u?.role] || 'Пользователь';
+const blockedBanner = () => S.me?.blocked_at ? `<div class="notice warn" role="alert">⛔ Аккаунт заблокирован администратором${S.me.blocked_reason ? `: <span data-ugc>${esc(S.me.blocked_reason)}</span>` : ''}. Нельзя создавать заявки, писать в чат и оставлять отзывы. <a href="#/complaint?type=appeal">Обжаловать</a></div>` : '';
+const STAFF_N = { owner: 'Владелец', manager: 'Менеджер', master: 'Мастер' };
+function rightsMatrix(only = null) {
+  const Y = '✅', N = '—', C = '🏙';
+  const cols = ['Клиент', 'Мастер', 'Менеджер', 'Владелец', 'Регион. админ', 'Главный админ'];
+  const rows = [
+    ['Заявки, чат, отзывы, жалобы от своего имени', Y, Y, Y, Y, Y, Y],
+    ['Видеть телефон клиента', N, 'порученные', 'принятые', 'принятые', C, Y],
+    ['Принимать / отклонять заявки, предлагать цену', N, N, Y, Y, N, N],
+    ['Завершать заявку, статусы мойки', N, 'порученные', Y, Y, N, N],
+    ['Поручать заявку сотруднику', N, N, Y, Y, N, N],
+    ['Отвечать на отзывы об организации', N, N, Y, Y, C, Y],
+    ['Профиль, фото, прайс, пауза, выходные', N, N, N, Y, C, Y],
+    ['Добавлять и удалять сотрудников', N, N, N, Y, N, N],
+    ['Одобрять организации, «Проверен», отключать', N, N, N, N, C, Y],
+    ['Модерировать отзывы', N, N, N, N, C, Y],
+    ['Отвечать на обращения и жалобы', N, N, N, N, Y, Y],
+    ['Пользователи: просмотр, блокировка', N, N, N, N, C, Y],
+    ['Настройки города: срок заявок, объявление', N, N, N, N, C, Y],
+    ['Общие лимиты, справочник городов', N, N, N, N, N, Y],
+    ['Назначать и снимать администраторов', N, N, N, N, N, Y],
+    ['Журнал действий администраторов', N, N, N, N, C, Y],
+  ];
+  const idx = only ? only.map((c) => cols.indexOf(c)) : cols.map((_, i) => i);
+  return `<div class="card"><h3>🔐 Кто что может</h3><div class="tblwrap"><table class="matrix"><tr><th>Действие</th>${idx.map((i) => `<th>${cols[i]}</th>`).join('')}</tr>
+    ${rows.filter((r) => idx.some((i) => r[i + 1] !== N)).map((r) => `<tr><td>${r[0]}</td>${idx.map((i) => `<td>${r[i + 1]}</td>`).join('')}</tr>`).join('')}</table></div>
+    <p class="small muted">🏙 — только в своём городе. «Мастер» и «Менеджер» — сотрудники организации, их добавляет владелец в «Кабинет → ⚙ Настройки». Права проверяет база данных (RLS и функции), а не только интерфейс: скрытая кнопка не даёт обойти запрет.</p></div>`;
+}
+function adminRoleCard() {
+  if (S.me.role === 'global_admin') return `<div class="card"><h3>👑 Вы — главный администратор</h3><p class="small">Управляете всей платформой: все города, <a href="#/admin?t=admins">админы и права</a>, <a href="#/admin?t=settings">настройки</a>, <a href="#/admin?t=users">пользователи и блокировки</a>, <a href="#/admin?t=cities">города</a>, <a href="#/admin?t=log">журнал действий</a>.</p></div>`;
+  return `<div class="card"><h3>🏙 Вы — региональный администратор: ${esc(S.me.managed_city || '')}</h3>
+    <div class="cols2"><div><b class="small">Можете (в своём городе)</b><ul class="small"><li>одобрять организации, ставить «Проверен», отключать</li><li>модерировать отзывы, отвечать на обращения</li><li>смотреть и блокировать пользователей города</li><li>срок заявок и объявление для города (⚙️ Настройки)</li><li>журнал действий по городу</li></ul></div>
+    <div><b class="small">Не можете</b><ul class="small"><li>назначать или снимать администраторов</li><li>менять общие лимиты и справочник городов</li><li>действовать в других городах</li></ul></div></div>
+    <details><summary class="small">Полная таблица прав</summary>${rightsMatrix()}</details></div>`;
+}
+const userLine = (u) => `<b>${esc(u.full_name || '—')}</b>${u.username ? ` <span class="muted">@${esc(u.username)}</span>` : ''}`;
+async function adminUsersTab(q) {
+  const list = await api.adminUsers(q.q || '');
+  const G = S.me.role === 'global_admin'; const cities = S.ref.cities.filter((c) => c.active);
+  return `<form class="card row" id="uSearch"><input name="q" class="grow" value="${esc(q.q || '')}" placeholder="Имя, @username или телефон" aria-label="Поиск пользователя"><button class="p">Найти</button></form>
+    <p class="small muted">${G ? 'Все пользователи' : `Пользователи города ${esc(S.me.managed_city || '')}`}: ${list.length}${list.length >= 100 ? '+ (уточните поиск)' : ''}</p>
+    ${list.map((u) => `<div class="card ucard"><div class="row between"><span>${userLine(u)} ${u.is_test ? '<span class="test-badge">ТЕСТ</span>' : ''}</span><span class="badge ${u.role === 'client' ? 'grey' : 'gold'}">${esc(roleName(u))}</span></div>
+      <div class="small">${tel(u.phone)} ${esc(u.city || '')} · заявок: ${u.requests} · организаций: ${u.orgs} · с ${dt(u.created_at)}</div>
+      ${u.blocked_at ? `<div class="notice warn small">⛔ Заблокирован ${dt(u.blocked_at)}: ${esc(u.blocked_reason || '')}</div>` : ''}
+      <div class="row" style="margin-top:8px">${u.id === S.me.id ? '<span class="small muted">Это вы</span>' : u.role !== 'client' ? '<span class="small muted">Администратора нельзя заблокировать — сначала снимите права</span>'
+        : u.blocked_at ? `<button class="ok sm" data-unblk="${esc(u.id)}">Разблокировать</button>` : `<button class="danger sm" data-blk="${esc(u.id)}">Заблокировать</button>`}
+      ${G && u.id !== S.me.id ? `<form class="row" data-role="${esc(u.id)}"><select name="role" aria-label="Роль"><option value="client" ${u.role === 'client' ? 'selected' : ''}>Пользователь</option><option value="regional_admin" ${u.role === 'regional_admin' ? 'selected' : ''}>Региональный админ</option><option value="global_admin" ${u.role === 'global_admin' ? 'selected' : ''}>Главный админ</option></select>
+        <select name="city" aria-label="Город для регионального админа"><option value="">— город —</option>${cities.map((c) => `<option ${c.name === (u.managed_city || u.city) ? 'selected' : ''}>${esc(c.name)}</option>`).join('')}</select><button class="sm">Сохранить роль</button></form>` : ''}</div></div>`).join('') || '<div class="empty">Никого не нашли</div>'}`;
+}
+async function adminAdminsTab() {
+  const [admins, log] = await Promise.all([api.adminList(), api.adminLog().catch(() => [])]);
+  const cities = S.ref.cities.filter((c) => c.active); const globals = admins.filter((a) => a.role === 'global_admin').length;
+  return `<div class="card"><h3>👥 Администраторы</h3><table><tr><th>Кто</th><th>Роль</th><th></th></tr>${admins.map((a) => `<tr><td>${userLine(a)}</td><td>${esc(roleName(a))}</td>
+      <td>${a.role === 'global_admin' && globals <= 1 ? '<span class="small muted">последний главный</span>' : `<button class="danger sm" data-demote="${esc(a.id)}" data-name="${esc(a.full_name || a.username || '')}">${a.id === S.me.id ? 'Снять с себя' : 'Снять права'}</button>`}</td></tr>`).join('')}</table></div>
+    <form class="card" id="admForm"><h3>➕ Назначить администратора</h3><p class="small muted">Человек должен один раз войти на сайт через Telegram. Найти можно и во вкладке «Пользователи».</p>
+      <label>Telegram username</label><input name="username" required placeholder="@username" autocomplete="off">
+      <label>Роль</label><select name="role" id="admRole"><option value="regional_admin">Региональный админ — один город</option><option value="global_admin">Главный админ — вся платформа</option></select>
+      <div id="admCity"><label>Город</label><select name="city">${cities.map((c) => `<option ${c.name === S.city ? 'selected' : ''}>${esc(c.name)}</option>`).join('')}</select></div>
+      <button class="p" style="margin-top:12px">Назначить</button></form>
+    ${rightsMatrix()}
+    <div class="card"><h3>📜 Последние действия</h3>${logRows(log.slice(0, 10))}<a href="#/admin?t=log" class="small">Весь журнал →</a></div>`;
+}
+const SETS = [['ttl_sto', 'Срок заявки в СТО, мин', 60, true], ['ttl_tow', 'Срок заявки на эвакуатор, мин', 60, true], ['ttl_urgent', 'Срок заявки на выездную помощь, мин', 60, true], ['ttl_parts', 'Срок сбора предложений по запчастям, мин', 180, true],
+  ['max_open_requests', 'Максимум открытых заявок у одного пользователя', 10, false], ['max_requests_hour', 'Максимум новых заявок в час у одного пользователя', 20, false]];
+async function adminSettingsTab(q) {
+  const G = S.me.role === 'global_admin'; const city = G ? (q.c || '') : (S.me.managed_city || '');
+  const list = await api.settings(city); const val = (k, c) => list.find((x) => x.key === k && x.city === c)?.value;
+  const cities = S.ref.cities.filter((c) => c.active);
+  return `<div class="card">${G ? `<label>Где действуют настройки</label><select id="setCity"><option value="" ${!city ? 'selected' : ''}>🌐 Все города (общие)</option>${cities.map((c) => `<option ${c.name === city ? 'selected' : ''}>${esc(c.name)}</option>`).join('')}</select>` : `<p>Настройки города <b>${esc(city)}</b>. Общие лимиты задаёт главный администратор.</p>`}</div>
+    <form class="card" id="setForm" data-city="${esc(city)}"><h3>⚙️ ${city ? `Настройки: ${esc(city)}` : 'Общие настройки платформы'}</h3>
+      ${SETS.filter(([, , , perCity]) => !city || perCity).map(([k, n, d]) => { const v = val(k, city), g = val(k, ''); return `<label>${n}</label><input type="number" name="${k}" value="${v ?? ''}" placeholder="${city ? `как в общих: ${g ?? d}` : `по умолчанию ${d}`}" min="1">`; }).join('')}
+      ${city ? `<label>Объявление для города (видно на главной всем в этом городе)</label><textarea name="city_notice" rows="2" maxlength="500" placeholder="Например: в праздники эвакуаторы работают с 9 до 21">${esc(val('city_notice', city) || '')}</textarea>` : ''}
+      <p class="small muted">Пустое поле — значение ${city ? 'из общих настроек' : 'по умолчанию'}. Изменения записываются в журнал.</p><button class="p">Сохранить</button></form>
+    ${G ? '<div class="card small">Города включаются и выключаются во вкладке <a href="#/admin?t=cities">🏙 Города</a>.</div>' : ''}`;
+}
+const ACT_N = { role: 'Роль', block: 'Блокировка', unblock: 'Разблокировка', setting: 'Настройка', staff_add: 'Сотрудник добавлен', staff_remove: 'Сотрудник удалён', provider: 'Организация', registration: 'Регистрация бизнеса' };
+const logDetails = (x) => { const d = x.details || {};
+  if (x.action === 'role') return `${ROLE_N[d.from] || d.from} → ${ROLE_N[d.to] || d.to}${d.city ? ' (' + esc(d.city) + ')' : ''}`;
+  if (x.action === 'setting') return `${esc(d.key)} = ${esc(d.value == null ? 'по умолчанию' : typeof d.value === 'string' ? d.value.slice(0, 60) : d.value)}`;
+  if (x.action === 'provider') return `${esc(d.name || '')}: ${d.is_active ? 'активна' : 'отключена'}${d.verified ? ', ✔ проверена' : ''}`;
+  if (x.action === 'registration') return `${esc(d.name || '')}: ${esc(d.status || '')}${d.reason ? ' — ' + esc(d.reason) : ''}`;
+  if (x.action.startsWith('staff')) return `организация №${esc(d.provider)}${d.role ? ', ' + (STAFF_N[d.role] || d.role) : ''}`;
+  return esc(d.reason || ''); };
+const logRows = (log) => log.length ? `<div class="tblwrap"><table><tr><th>Когда</th><th>Кто</th><th>Действие</th><th>Кому</th><th>Подробности</th></tr>${log.map((x) => `<tr><td class="small">${dt(x.created_at)}</td><td class="small">${x.actor ? userLine(x.actor) : '—'}</td><td>${ACT_N[x.action] || esc(x.action)}${x.city ? `<div class="small muted">${esc(x.city)}</div>` : ''}</td><td class="small">${x.target ? userLine(x.target) : '—'}</td><td class="small">${logDetails(x)}</td></tr>`).join('')}</table></div>` : '<p class="muted small">Записей пока нет</p>';
+async function adminLogTab() { return `<div class="card"><h3>📜 Журнал действий администраторов</h3><p class="small muted">Назначения и снятия админов, блокировки, настройки, одобрения организаций, отключения и «Проверен», сотрудники организаций. Записи нельзя изменить или удалить из приложения.</p>${logRows(await api.adminLog())}</div>`; }
+function adminRolesAfter(v) {
+  const us = $('#uSearch', v); if (us) us.onsubmit = (e) => { e.preventDefault(); location.hash = `#/admin?t=users&q=${encodeURIComponent(us.q.value.trim())}`; };
+  $$('[data-blk]', v).forEach((b) => b.onclick = () => { const r = prompt('Причина блокировки (увидит пользователь):'); if (r && r.trim()) act(b, () => api.blockUser(b.dataset.blk, true, r.trim()), 'Пользователь заблокирован'); });
+  $$('[data-unblk]', v).forEach((b) => b.onclick = () => act(b, () => api.blockUser(b.dataset.unblk, false, ''), 'Разблокирован'));
+  $$('form[data-role]', v).forEach((f) => f.onsubmit = (e) => { e.preventDefault(); const d = formData(f);
+    if (d.role === 'regional_admin' && !d.city) return toast('Выберите город', true);
+    if (d.role === 'global_admin' && !confirm('Назначить ГЛАВНЫМ администратором? Он получит полный доступ ко всей платформе, включая назначение админов.')) return;
+    act($('button', f), () => api.setRole(f.dataset.role, d.role, d.city), 'Роль сохранена'); });
+  $$('[data-demote]', v).forEach((b) => b.onclick = () => { if (confirm(`Снять права администратора с «${b.dataset.name}»?`)) act(b, async () => { await api.setRole(b.dataset.demote, 'client', null); if (b.dataset.demote === S.me.id) { await refreshMe(); location.hash = '#/'; } }, 'Права сняты'); });
+  const af = $('#admForm', v); if (af) {
+    const sync = () => { $('#admCity', af).hidden = af.role.value !== 'regional_admin'; }; af.role.onchange = sync; sync();
+    af.onsubmit = (e) => { e.preventDefault(); const d = formData(af); const un = d.username.replace(/^@/, '').trim().toLowerCase();
+      if (d.role === 'global_admin' && !confirm(`Назначить @${un} ГЛАВНЫМ администратором? Он получит полный доступ ко всей платформе.`)) return;
+      act($('button', af), async () => { const u = (await api.adminUsers(un)).find((x) => (x.username || '').toLowerCase() === un);
+        if (!u) throw new Error('Пользователь не найден: пусть сначала войдёт на сайт через Telegram');
+        await api.setRole(u.id, d.role, d.role === 'regional_admin' ? d.city : null); }, 'Администратор назначен'); };
+  }
+  const sc = $('#setCity', v); if (sc) sc.onchange = () => { location.hash = `#/admin?t=settings&c=${encodeURIComponent(sc.value)}`; };
+  const sf = $('#setForm', v); if (sf) sf.onsubmit = (e) => { e.preventDefault(); const city = sf.dataset.city; const d = formData(sf);
+    act($('button', sf), async () => { const cur = await api.settings(city); const old = (k) => cur.find((x) => x.key === k && x.city === city)?.value;
+      for (const [k] of SETS) if (k in d) { const nv = d[k] === '' ? null : +d[k]; if ((old(k) ?? null) !== nv) await api.setSetting(k, city, nv); }
+      if ('city_notice' in d) { const nv = d.city_notice.trim() || null; if ((old('city_notice') ?? null) !== nv) await api.setSetting('city_notice', city, nv); } }, 'Настройки сохранены'); };
+}
+
+// ------------------------------------------------------------ настройки организации (Обновление 6)
+async function orgSettings(p) {
+  const staff = await api.staffList(p.id).catch(() => []);
+  const muted = localStorage.getItem('am24-mute-' + p.id) === '1';
+  return `<form class="card" id="orgSet"><h3>⏯ Приём заявок</h3>
+      <label class="check"><input type="checkbox" name="paused" ${p.paused ? 'checked' : ''}> <span>Пауза — новые заявки не приходят (отпуск, загрузка, ремонт). Начатые заявки продолжаются.</span></label>
+      <label>Выходные дни ${tip('В эти дни в каталоге будет «Сегодня выходной». Заявки всё равно приходят, если не включена пауза.')}</label>
+      <div class="opts">${[1, 2, 3, 4, 5, 6, 0].map((d) => `<label class="opt"><input type="checkbox" name="days_off" value="${d}" ${(p.days_off || []).includes(d) ? 'checked' : ''}><span>${DOW[d]}</span></label>`).join('')}</div>
+      <p class="small muted">Часы работы, адрес, фото, «О нас» — во вкладке <a href="#/cabinet?p=${p.id}&t=org">🏢 Профиль</a>${p.kind === 'sto' ? `, цены — в <a href="#/cabinet?p=${p.id}&t=prices">💰 Прайс</a>` : ''}.</p>
+      <button class="p">Сохранить</button></form>
+    <div class="card"><h3>🔔 Уведомления на этом устройстве</h3><label class="check"><input type="checkbox" id="orgMute" ${muted ? '' : 'checked'}> <span>Сообщать о новых заявках «${esc(p.name)}» (звук, счётчик)</span></label>
+      <p class="small muted">Звук и системные уведомления — в <a href="#/profile">Профиле</a>.</p></div>
+    <div class="card"><h3>👷 Сотрудники</h3><p class="small muted">Добавьте менеджера (принимает заявки, ведёт чат, поручает) или мастера (видит только порученные ему заявки и завершает их). Сотрудник должен один раз войти на сайт через Telegram.</p>
+      <table><tr><th>Кто</th><th>Роль</th><th>Заявок</th><th></th></tr>${staff.map((x) => `<tr><td>${userLine(x)}</td><td>${STAFF_N[x.role]}</td><td>${x.handled}</td><td>${x.role === 'owner' ? '' : `<button class="danger sm" data-srm="${esc(x.user_id)}">Удалить</button>`}</td></tr>`).join('')}</table>
+      <form class="row" id="staffAdd" style="margin-top:10px"><input name="username" class="grow" placeholder="@username сотрудника" required autocomplete="off"><select name="role"><option value="manager">Менеджер</option><option value="master">Мастер</option></select><button class="p">Добавить</button></form></div>
+    ${rightsMatrix(['Мастер', 'Менеджер', 'Владелец'])}`;
+}
+function orgSettingsAfter(v, pid) {
+  const f = $('#orgSet', v); if (f) f.onsubmit = (e) => { e.preventDefault(); const days = $$('[name=days_off]:checked', f).map((x) => +x.value);
+    act($('button', f), async () => { await api.updateProvider(pid, { paused: f.paused.checked, days_off: days }); S.myProv = await api.myProviders(); }, f.paused.checked ? 'Пауза включена' : 'Сохранено'); };
+  const m = $('#orgMute', v); if (m) m.onchange = () => { localStorage.setItem('am24-mute-' + pid, m.checked ? '0' : '1'); toast(m.checked ? 'Уведомления включены' : 'Уведомления выключены'); };
+  const sa = $('#staffAdd', v); if (sa) sa.onsubmit = (e) => { e.preventDefault(); const d = formData(sa); act($('button', sa), () => api.staffAdd(pid, d.username, d.role), 'Сотрудник добавлен'); };
+  $$('[data-srm]', v).forEach((b) => b.onclick = () => { if (confirm('Удалить сотрудника? Его незавершённые поручения снимутся.')) act(b, () => api.staffRemove(pid, b.dataset.srm), 'Сотрудник удалён'); });
+}
+
 // ------------------------------------------------------------ уведомления: звук, счётчики в меню, системные
 // Клиенту — смена статуса заявки и новые сообщения; исполнителю — новые заявки в ленте, решения клиента и сообщения.
 const N = { badges: { requests: 0, cabinet: 0 }, timer: null, unsub: null, uid: null, busy: false };
@@ -917,7 +1083,7 @@ async function nPoll() {
       nSet('st', cur);
     }
     for (const p of S.myProv) {
-      if (!p.is_active) continue;
+      if (!p.is_active || localStorage.getItem('am24-mute-' + p.id) === '1') continue;
       const feed = await api.providerFeed(p.id).catch(() => null); if (!feed) continue;
       const prev = nGet('feed-' + p.id), cur = {};
       for (const r of feed) { cur[r.id] = r.status;

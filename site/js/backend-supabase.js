@@ -78,8 +78,9 @@ export const live = {
     return r.error ? must(await q('id,rating,comment,is_published,created_at,request_id,provider_id')) : r.data;
   },
   async myProviders() {
-    const s = await client(); const u = await me(); if (!u) return [];
-    return must(await (await from('am_providers')).select('*').eq('owner_id', u.id).order('id'));
+    const u = await me(); if (!u) return [];
+    if ((await this.caps()).v8) { const r = await rpc('am_my_orgs'); return (r || []).map((x) => ({ ...x.org, my_role: x.my_role })); }
+    return must(await (await from('am_providers')).select('*').eq('owner_id', u.id).order('id')).map((x) => ({ ...x, my_role: 'owner' }));
   },
   async updateProvider(id, patch) { return must(await (await from('am_providers')).update(patch).eq('id', id).select().single()); },
 
@@ -142,7 +143,8 @@ export const live = {
     // обновление 3 — функция am_provider_stats (доступна и гостю, без ошибки 401 в консоли); обновление 4 — таблица am_complaints
     const [r, r4] = await Promise.all([(await client()).rpc('am_provider_stats', { p_id: 0 }), (await from('am_complaints')).select('id').limit(1)]);
     const missing = (x) => !!(x.error && /does not exist|42P01|PGRST20[25]|schema cache|Could not find/i.test(x.error.message + x.error.code));
-    capsCache = { v3: !missing(r), v4: !missing(r4) };
+    const r8 = await (await from('am_settings')).select('key').limit(1);
+    capsCache = { v3: !missing(r), v4: !missing(r4), v8: !missing(r8) };
     return capsCache;
   },
   async uploadRequestPhoto(blob) {
@@ -183,6 +185,23 @@ export const live = {
     return () => { off = true; if (ch) sb.removeChannel(ch); };
   },
   async replyReview(id, text) { return rpc('am_reply_review', { p_id: +id, p_text: text || '' }); },
+
+  // ---- обновление 6 (supabase/08_admin.sql): админы и права, пользователи, настройки, журнал, сотрудники
+  async adminList() { return rpc('am_admin_list'); },
+  async adminUsers(q = '') { return rpc('am_admin_users', { p_q: q || '', p_limit: 100 }); },
+  async setRole(userId, role, city = null) { return rpc('am_admin_set_role', { p_user: userId, p_role: role, p_city: city || null }); },
+  async blockUser(userId, block, reason = '') { return rpc('am_admin_block', { p_user: userId, p_block: !!block, p_reason: reason || '' }); },
+  async adminLog() {
+    const r = must(await (await from('am_admin_log')).select('*, actor:am_profiles!am_admin_log_actor_id_fkey(username,full_name), target:am_profiles!am_admin_log_target_user_fkey(username,full_name)').order('id', { ascending: false }).limit(100));
+    return r;
+  },
+  async settings(city = '') { return must(await (await from('am_settings')).select('*').in('city', ['', city || ''])); },
+  async setSetting(key, city, value) { return rpc('am_set_setting', { p_key: key, p_city: city || '', p_value: value }); },
+  async cityNotice(city) { try { const v = await rpc('am_setting', { p_key: 'city_notice', p_city: city || '' }); return typeof v === 'string' ? v : ''; } catch { return ''; } },
+  async staffList(pid) { return rpc('am_staff_list', { p_provider: +pid }); },
+  async staffAdd(pid, username, role) { return rpc('am_staff_add', { p_provider: +pid, p_username: username, p_role: role }); },
+  async staffRemove(pid, userId) { return rpc('am_staff_remove', { p_provider: +pid, p_user: userId }); },
+  async assign(rid, userId) { return rpc('am_assign_request', { p_id: +rid, p_user: userId || null }); },
 
   // ---- обновление 4 (supabase/04_legal.sql): согласия, обращения, права субъекта ПД, прозрачность
   async acceptLegal(kinds, version) { return rpc('am_accept_legal', { p_kinds: kinds, p_version: version, p_ua: navigator.userAgent.slice(0, 300) }); },
