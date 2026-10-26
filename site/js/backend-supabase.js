@@ -139,10 +139,9 @@ export const live = {
   // ---- обновление 3 (supabase/03_features.sql): фото, чат, статистика, ответы на отзывы
   async caps() {
     if (capsCache) return capsCache;
-    const r = await (await from('am_messages')).select('id').limit(1);
-    // 42P01 — таблицы ещё нет (миграция не применена); ошибка прав (аноним) значит таблица есть
-    const r4 = await (await from('am_complaints')).select('id').limit(1);
-    const missing = (x) => !!(x.error && /does not exist|42P01|PGRST205|schema cache/i.test(x.error.message + x.error.code));
+    // обновление 3 — функция am_provider_stats (доступна и гостю, без ошибки 401 в консоли); обновление 4 — таблица am_complaints
+    const [r, r4] = await Promise.all([(await client()).rpc('am_provider_stats', { p_id: 0 }), (await from('am_complaints')).select('id').limit(1)]);
+    const missing = (x) => !!(x.error && /does not exist|42P01|PGRST20[25]|schema cache|Could not find/i.test(x.error.message + x.error.code));
     capsCache = { v3: !missing(r), v4: !missing(r4) };
     return capsCache;
   },
