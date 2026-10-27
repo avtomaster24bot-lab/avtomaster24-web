@@ -1,4 +1,4 @@
-// Боевой тест ролей и прав (08_admin.sql): сотрудники, блокировка, настройки, границы регионального админа.
+// Боевой тест ролей и прав (08_admin.sql, 09_roles_fix.sql, отзывы — 10_reviews.sql): сотрудники, блокировка, настройки, границы регионального админа.
 // Запуск: NODE_PATH=<node_modules с @supabase/supabase-js> node tests/e2e/roles_e2e.cjs
 // Меняет только тестовые аккаунты @am24.test; настройку города ставит равной значению по умолчанию и сразу удаляет.
 const { mk, login, must, rpc, ok, denied, summary, assert } = require('./common.cjs');
@@ -89,6 +89,45 @@ const CITY = 'Талдыкорган', OTHER = 'Алматы';
   });
   await ok('клиент видит сообщения менеджера и мастера', async () => { const m = must(await C.from('am_messages').select('body').eq('request_id', rid)); assert(m.length >= 2, 'сообщений ' + m.length); });
   await ok('мастер завершает порученную заявку', () => rpc(W, 'am_complete_request', { p_id: rid, p_provider: pid, p_amount: 1000 }));
+
+  // ---------- отзывы (10_reviews.sql) ----------
+  const v10 = await rpc(anon, 'am_review_rule_name', { p_rule: 'hold' }).then(() => true, () => false);
+  if (!v10) console.log('SKIP  отзывы (10): 10_reviews.sql ещё не применён');
+  else {
+    const cnt = async () => must(await O.from('am_providers').select('reviews_count').eq('id', pid).single()).reviews_count;
+    const n0 = await cnt(); let rv;
+    await ok('клиент оставляет отзыв с телефоном → на модерации, ПД отмечены, рейтинг не меняется (10)', async () => {
+      await rpc(C, 'am_leave_review', { p_id: rid, p_rating: 2, p_comment: 'ТЕСТ: мастер дал номер +7 700 000 00 99' });
+      rv = must(await C.from('am_reviews').select('id,is_published,pii_flag').eq('request_id', rid).single());
+      assert(!rv.is_published && rv.pii_flag, JSON.stringify(rv)); assert(await cnt() === n0, 'рейтинг учёл неопубликованный');
+    });
+    await denied('посторонний не модерирует отзыв (10)', () => rpc(X, 'am_review_decide', { p_id: rv?.id, p_action: 'publish' }), /прав/);
+    await denied('клиент не модерирует свой отзыв (10)', () => rpc(C, 'am_review_decide', { p_id: rv?.id, p_action: 'publish' }), /прав/);
+    await denied('гость не модерирует (10)', () => rpc(anon, 'am_review_decide', { p_id: rv?.id, p_action: 'publish' }));
+    await denied('пересчёт рейтинга закрыт (10)', () => rpc(C, 'am_recalc_rating', { p_provider: pid }));
+    await denied('скрыть без пункта правил нельзя (10)', () => rpc(A, 'am_review_decide', { p_id: rv?.id, p_action: 'hide', p_rule: 'xxx' }), /пункт/);
+    await denied('удалить не скрытый отзыв нельзя (10)', () => rpc(A, 'am_review_decide', { p_id: rv?.id, p_action: 'delete', p_reason: 'ТЕСТ' }), /Сначала/);
+    await ok('регион. админ скрывает на время проверки (10)', () => rpc(A, 'am_review_decide', { p_id: rv?.id, p_action: 'hold', p_reason: 'ТЕСТ: жалоба' }));
+    await ok('автор видит пункт и причину (10)', async () => { const r = must(await C.from('am_reviews').select('hidden_rule,hidden_reason').eq('id', rv.id).single()); assert(r.hidden_rule === 'hold' && /ТЕСТ/.test(r.hidden_reason), JSON.stringify(r)); });
+    await denied('автор не правит отзыв на проверке (10)', () => rpc(C, 'am_edit_my_review', { p_id: rv?.id, p_rating: 3, p_comment: 'ТЕСТ' }), /проверке/);
+    await denied('удаление без основания нельзя (10)', () => rpc(A, 'am_review_decide', { p_id: rv?.id, p_action: 'delete', p_reason: '' }), /основание/);
+    await ok('публикация → рейтинг учитывает отзыв (10)', async () => { await rpc(A, 'am_review_decide', { p_id: rv.id, p_action: 'publish' }); assert(await cnt() === n0 + 1, 'count'); });
+    await denied('посторонний не правит чужой отзыв (10)', () => rpc(X, 'am_edit_my_review', { p_id: rv?.id, p_rating: 5, p_comment: '' }), /не ваш/);
+    await denied('посторонний не удаляет чужой отзыв (10)', () => rpc(X, 'am_delete_my_review', { p_id: rv?.id }), /не ваш/);
+    await ok('автор исправляет → снова на модерации (10)', async () => {
+      await rpc(C, 'am_edit_my_review', { p_id: rv.id, p_rating: 4, p_comment: 'ТЕСТ: сделали, но долго' });
+      const r = must(await C.from('am_reviews').select('is_published,edited_at,pii_flag').eq('id', rv.id).single()); assert(!r.is_published && r.edited_at && !r.pii_flag, JSON.stringify(r)); assert(await cnt() === n0, 'count');
+    });
+    await ok('журнал: решения по отзыву записаны (10)', async () => { const l = must(await A.from('am_admin_log').select('action,details').eq('action', 'review').order('id', { ascending: false }).limit(10)); assert(l.some((x) => x.details?.review === rv.id && x.details?.rule === 'hold'), 'нет записи'); });
+    await ok('автор удаляет свой отзыв (10)', async () => { await rpc(C, 'am_delete_my_review', { p_id: rv.id }); const r = must(await C.from('am_reviews').select('id').eq('id', rv.id)); assert(!r.length && await cnt() === n0, 'не удалён'); });
+    await ok('сотрудник не оценивает свою организацию (10)', async () => {
+      const r2 = await rpc(M, 'am_create_request', { p: { type: 'sto', city: CITY, category_id: 2, subcategory: 'ТЕСТ роли', description: 'ТЕСТ: отзыв своей организации', vehicle_info: 'ТЕСТ' } });
+      await rpc(O, 'am_accept_request', { p_id: r2, p_provider: pid }); await rpc(O, 'am_complete_request', { p_id: r2, p_provider: pid, p_amount: 0 });
+      let msg = ''; try { await rpc(M, 'am_leave_review', { p_id: r2, p_rating: 5, p_comment: '' }); } catch (e) { msg = e.message; }
+      assert(/свою организацию/.test(msg), 'прошло: ' + msg);
+    });
+    await ok('прозрачность: годовой отчёт по отзывам (10)', async () => { const t = await rpc(anon, 'am_transparency'); for (const k of ['reviews_pending', 'reviews_hidden', 'reviews_pii_flagged', 'reviews_hidden_by_rule', 'reviews_deleted_by_moderator']) assert(k in t, 'нет ' + k); });
+  }
   await ok('владелец видит, кто сколько заявок принял', async () => { const l = await rpc(O, 'am_staff_list', { p_provider: pid }); assert(l.find((x) => x.user_id === M.uid)?.handled >= 1, JSON.stringify(l)); });
   await ok('владелец удаляет сотрудников — доступ пропадает', async () => {
     for (const s of [M, W]) await rpc(O, 'am_staff_remove', { p_provider: pid, p_user: s.uid });

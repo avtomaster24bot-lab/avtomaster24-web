@@ -92,7 +92,9 @@ function matches(r, p) {
     && (r.type !== 'sto' || !r.category_id || !p.specs.length || p.specs.includes(r.category_id) || r.target_provider_id === p.id);
 }
 const touch = (r, patch) => { const was = r.accepted_by; Object.assign(r, patch, { updated_at: now() }); if (!was && r.accepted_by && !r.accepted_at) r.accepted_at = now(); save(); };
-const recalc = (pid) => { const rs = load().reviews.filter((x) => x.provider_id === pid); const p = prov(pid);
+const PII = /(\+?[78][\s\-()]*)?\d{3}[\s\-)]*\d{3}[\s\-]*\d{2}[\s\-]*\d{2}|(^|[^\d])\d{3}\s?[a-zа-я]{2,3}\s?\d{2}([^\d]|$)|(^|\D)\d{12}(\D|$)|[^\s@]+@[^\s@]+\.[a-z]{2,}/i;
+const REVIEW_RULES = { insult: 1, false: 1, pii: 1, ads: 1, fake: 1, illegal: 1, hold: 1 };
+const recalc = (pid) => { const rs = load().reviews.filter((x) => x.provider_id === pid && x.is_published); const p = prov(pid);
   p.reviews_count = rs.length; p.rating = rs.length ? Math.round(rs.reduce((s, x) => s + x.rating, 0) / rs.length * 100) / 100 : 0; };
 export const stems = (q) => (q || '').toLowerCase().split(/[^a-zа-яё0-9]+/i).filter((w) => w.length > 1).map((w) => w.length > 4 ? w.slice(0, Math.max(4, w.length - 2)) : w);
 const clone = (x) => JSON.parse(JSON.stringify(x));
@@ -165,6 +167,7 @@ export const demo = {
   async leaveReview(rid, rating, comment) {
     const r = myReq(rid); notBlocked(); if (r.status !== 'completed' || !r.accepted_by) fail('Оценить можно только выполненную заявку');
     if (load().reviews.some((x) => x.request_id === r.id)) fail('Вы уже оценили эту заявку');
+    if (staffRole(prov(r.accepted_by))) fail('Нельзя оценивать свою организацию (п. 3.5 правил отзывов)');
     load().reviews.push({ id: id(), user_id: uid(), provider_id: r.accepted_by, request_id: r.id, rating: +rating, comment: comment || '', is_published: !(comment || '').trim(), created_at: now() });
     recalc(r.accepted_by); save();
   },
@@ -253,10 +256,29 @@ export const demo = {
       pending_regs: d.registrations.filter((g) => g.status === 'pending').length, pending_reviews: d.reviews.filter((x) => !x.is_published).length,
       turnover: rs.filter((r) => r.status === 'completed').reduce((s, r) => s + (r.final_amount || 0), 0) };
   },
-  async pendingReviews() { if (!isAdmin()) fail('Нет прав'); return clone(load().reviews.filter((x) => !x.is_published).map((x) => ({ ...x, provider_name: prov(x.provider_id)?.name }))); },
+  async pendingReviews() { if (!isAdmin()) fail('Нет прав'); return clone(load().reviews.filter((x) => !x.is_published && !x.hidden_at && isAdmin(prov(x.provider_id)?.city)).map((x) => ({ ...x, provider_name: prov(x.provider_id)?.name, pii_flag: PII.test(x.comment || '') }))); },
+  async hiddenReviews() { if (!isAdmin()) fail('Нет прав'); return clone(load().reviews.filter((x) => x.hidden_at && isAdmin(prov(x.provider_id)?.city)).map((x) => ({ ...x, provider_name: prov(x.provider_id)?.name }))); },
+  async getReview(rvid) { const x = load().reviews.find((r) => r.id === +rvid); if (!x || !(x.is_published || x.user_id === uid() || isAdmin(prov(x.provider_id)?.city))) return null; return clone({ ...x, provider_name: prov(x.provider_id)?.name }); },
+  async reviewDecide(rvid, action, rule = null, reason = '') {
+    const d = load(); const x = d.reviews.find((r) => r.id === +rvid) || fail('Отзыв не найден'); const city = prov(x.provider_id)?.city;
+    if (!isAdmin(city)) fail('Нет прав');
+    if (action === 'publish') Object.assign(x, { is_published: true, hidden_at: null, hidden_rule: null, hidden_reason: null });
+    else if (action === 'hide' || action === 'hold') { const r = action === 'hold' ? 'hold' : rule; if (!REVIEW_RULES[r]) fail('Укажите пункт правил'); Object.assign(x, { is_published: false, hidden_at: now(), hidden_rule: r, hidden_reason: (reason || '').trim() || null }); }
+    else if (action === 'delete') { if (!x.hidden_at) fail('Сначала скройте отзыв (удаление — после проверки)'); if (!(reason || '').trim()) fail('Укажите основание удаления'); d.reviews = d.reviews.filter((r) => r.id !== x.id); }
+    else fail('Неизвестное действие');
+    logA('review', x.user_id, city, { review: x.id, provider: x.provider_id, action, rule: action === 'hold' ? 'hold' : action === 'delete' ? x.hidden_rule : rule, reason: reason || null });
+    recalc(x.provider_id); save();
+  },
+  async deleteMyReview(rvid) { const d = load(); const x = d.reviews.find((r) => r.id === +rvid); if (!x || x.user_id !== uid()) fail('Это не ваш отзыв'); d.reviews = d.reviews.filter((r) => r.id !== x.id); recalc(x.provider_id); save(); },
+  async editMyReview(rvid, rating, comment) {
+    const x = load().reviews.find((r) => r.id === +rvid); if (!x || x.user_id !== uid()) fail('Это не ваш отзыв'); notBlocked();
+    if (Date.now() - new Date(x.created_at) > 30 * 864e5) fail('Исправить отзыв можно в течение 30 дней. Можно удалить его.');
+    if (x.hidden_rule === 'hold') fail('Отзыв на проверке по жалобе — исправить можно после решения');
+    if (!(+rating >= 1 && +rating <= 5)) fail('Оценка от 1 до 5'); const c = (comment || '').trim().slice(0, 1000);
+    Object.assign(x, { rating: +rating, comment: c, edited_at: now(), is_published: !c, hidden_at: null, hidden_rule: null, hidden_reason: null }); recalc(x.provider_id); save();
+  },
   async moderateReview(rid, publish) {
-    if (!isAdmin()) fail('Нет прав'); const d = load(); const x = d.reviews.find((r) => r.id === +rid); if (!x) return;
-    if (publish) x.is_published = true; else { d.reviews = d.reviews.filter((r) => r.id !== x.id); recalc(x.provider_id); } save();
+    return this.reviewDecide(rid, publish ? 'publish' : 'hide', publish ? null : 'insult', publish ? '' : 'Нарушение правил отзывов');
   },
   async adminProviders() { if (!isAdmin()) fail('Нет прав'); return clone(load().providers.filter((p) => isAdmin(p.city))); },
   async setProviderActive(pid, active) { const p = prov(pid); if (!p || !isAdmin(p.city)) fail('Нет прав'); p.is_active = !!active; save(); },
@@ -264,7 +286,7 @@ export const demo = {
   async setProviderVerified(pid, v) { const p = prov(pid); if (!p || !isAdmin(p.city)) fail('Нет прав'); p.verified = !!v; save(); },
 
   // ---- обновление 3: фото, чат, статистика, ответы на отзывы
-  async caps() { return { v3: true, v4: true, v8: true }; },
+  async caps() { return { v3: true, v4: true, v8: true, v10: true }; },
   async uploadRequestPhoto(blob) { if (!uid()) fail('Войдите'); return putPhoto(`req/${uid()}/${Date.now()}-${Math.random().toString(36).slice(2, 8)}.jpg`, blob); },
   async photoUrls(paths) { const m = photos(); return (paths || []).map((x) => (/^(assets|https?:|data:)/.test(x) ? x : m[x]) || ''); },
   async uploadProviderPhoto(pid, blob) { const p = prov(pid); if (!p || (p.owner_id !== uid() && !isAdmin(p.city))) fail('Нет прав'); return new Promise((ok, no) => { const fr = new FileReader(); fr.onload = () => ok(fr.result); fr.onerror = () => no(new Error('Не удалось прочитать фото')); fr.readAsDataURL(blob); }); },
@@ -407,7 +429,12 @@ export const demo = {
       registered_users: Object.values(d.profiles).filter((p) => !p.deleted_at).length, providers_active: d.providers.filter((p) => p.is_active).length,
       complaints_total: cs.length, complaints_resolved: cs.filter((c) => ['resolved', 'rejected'].includes(c.status)).length,
       complaints_overdue: cs.filter((c) => ['new', 'in_review'].includes(c.status) && new Date(c.due_at) < new Date()).length,
-      reviews_published: d.reviews.filter((r) => r.is_published).length, reviews_hidden: d.reviews.filter((r) => !r.is_published).length };
+      reviews_published: d.reviews.filter((r) => r.is_published).length, reviews_pending: d.reviews.filter((r) => !r.is_published && !r.hidden_at).length,
+      reviews_hidden: d.reviews.filter((r) => r.hidden_at).length, reviews_pii_flagged: d.reviews.filter((r) => PII.test(r.comment || '')).length,
+      complaints_reviews: cs.filter((c) => c.target_type === 'review').length,
+      reviews_hidden_by_rule: (d.admin_log || []).filter((x) => x.action === 'review' && ['hide', 'hold'].includes(x.details?.action)).reduce((o, x) => ({ ...o, [x.details.rule]: (o[x.details.rule] || 0) + 1 }), {}),
+      reviews_deleted_by_moderator: (d.admin_log || []).filter((x) => x.action === 'review' && x.details?.action === 'delete').length,
+      reviews_restored: (d.admin_log || []).filter((x) => x.action === 'review' && x.details?.action === 'publish').length };
   },
 
   async addCity(name) { if (!isAdmin()) fail('Нет прав'); if (!name) fail('Введите название'); load().cities.push({ id: id(), name, region: '', active: true }); save(); },

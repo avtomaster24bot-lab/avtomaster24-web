@@ -130,7 +130,16 @@ export const live = {
   async reviewRegistration(id, approve, reason) { return rpc('am_review_registration', { p_id: id, p_approve: !!approve, p_reason: reason || null }); },
   async adminRequests() { return rpc('am_admin_requests'); },
   async adminStats() { return rpc('am_admin_stats'); },
-  async pendingReviews() { return must(await (await from('am_reviews')).select('*, p:am_providers(name)').eq('is_published', false).order('id')).map((x) => ({ ...x, provider_name: x.p?.name })); },
+  async pendingReviews() {
+    let q = (await from('am_reviews')).select('*, p:am_providers(name)').eq('is_published', false);
+    if ((await this.caps()).v10) q = q.is('hidden_at', null);
+    return must(await q.order('id')).map((x) => ({ ...x, provider_name: x.p?.name }));
+  },
+  async hiddenReviews() { return must(await (await from('am_reviews')).select('*, p:am_providers(name)').not('hidden_at', 'is', null).order('hidden_at', { ascending: false }).limit(100)).map((x) => ({ ...x, provider_name: x.p?.name })); },
+  async getReview(id) { const r = must(await (await from('am_reviews')).select('*, p:am_providers(name)').eq('id', +id).maybeSingle()); return r ? { ...r, provider_name: r.p?.name } : null; },
+  async reviewDecide(id, action, rule = null, reason = '') { return rpc('am_review_decide', { p_id: +id, p_action: action, p_rule: rule, p_reason: reason || null }); },
+  async deleteMyReview(id) { return rpc('am_delete_my_review', { p_id: +id }); },
+  async editMyReview(id, rating, comment) { return rpc('am_edit_my_review', { p_id: +id, p_rating: +rating, p_comment: comment || '' }); },
   async moderateReview(id, publish) { return rpc('am_moderate_review', { p_id: id, p_publish: !!publish }); },
   async adminProviders() { return must(await (await from('am_providers')).select('*').order('id')); },
   async setProviderActive(id, active) { return must(await (await from('am_providers')).update({ is_active: !!active }).eq('id', id)); },
@@ -143,8 +152,8 @@ export const live = {
     // обновление 3 — функция am_provider_stats (доступна и гостю, без ошибки 401 в консоли); обновление 4 — таблица am_complaints
     const [r, r4] = await Promise.all([(await client()).rpc('am_provider_stats', { p_id: 0 }), (await from('am_complaints')).select('id').limit(1)]);
     const missing = (x) => !!(x.error && /does not exist|42P01|PGRST20[25]|schema cache|Could not find/i.test(x.error.message + x.error.code));
-    const r8 = await (await from('am_settings')).select('key').limit(1);
-    capsCache = { v3: !missing(r), v4: !missing(r4), v8: !missing(r8) };
+    const [r8, r10] = await Promise.all([(await from('am_settings')).select('key').limit(1), (await client()).rpc('am_review_rule_name', { p_rule: 'hold' })]);
+    capsCache = { v3: !missing(r), v4: !missing(r4), v8: !missing(r8), v10: !missing(r10) };
     return capsCache;
   },
   async uploadRequestPhoto(blob) {

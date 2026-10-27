@@ -46,6 +46,13 @@ const openChip = (wh, p = null) => {
   const o = openNow(wh); return o == null ? '' : o ? '<span class="chip-s ok">● Открыто</span>' : '<span class="chip-s off">● Закрыто</span>'; };
 
 // избранное — хранится в браузере
+// правила отзывов (legal/reviews.html) и поиск персональных данных в тексте — как в 10_reviews.sql
+const REVIEW_RULES = { insult: 'п. 3.1 — оскорбления, нецензурная лексика, угрозы', false: 'п. 3.2 — заведомо ложные утверждения о фактах', pii: 'п. 3.3 — персональные данные',
+  ads: 'п. 3.4 — реклама, ссылки, призывы к другому исполнителю', fake: 'п. 3.5 — отзыв за вознаграждение, от сотрудника или конкурента', illegal: 'п. 3.6 — противоправный контент', hold: 'п. 5 — скрыт на время проверки жалобы' };
+const PII_RE = /(\+?[78][\s\-()]*)?\d{3}[\s\-)]*\d{3}[\s\-]*\d{2}[\s\-]*\d{2}|\b\d{3}\s?[a-zа-я]{2,3}\s?\d{2}\b|\b\d{12}\b|[^\s@]+@[^\s@]+\.[a-z]{2,}/gi;
+const hasPii = (t) => { PII_RE.lastIndex = 0; return PII_RE.test(t || ''); };
+const markPii = (t) => esc(t).replace(new RegExp(PII_RE.source, 'gi'), (m) => `<mark class="pii" title="Возможны персональные данные">${m}</mark>`);
+const verifiedRev = (r) => `<span class="vrev" title="Оставить отзыв может только клиент, чья заявка выполнена этим исполнителем">✔ ${L('по выполненной заявке', 'орындалған өтінім бойынша')}</span>${r.edited_at ? ` <span class="small muted">· ${L('изменён', 'өзгертілді')}</span>` : ''}`;
 const favs = () => { try { return JSON.parse(localStorage.getItem('am24-fav')) || []; } catch { return []; } };
 const isFav = (id) => favs().includes(+id);
 const toggleFav = (id) => { const f = favs(); const i = f.indexOf(+id); if (i >= 0) f.splice(i, 1); else f.push(+id); localStorage.setItem('am24-fav', JSON.stringify(f)); return i < 0; };
@@ -292,7 +299,7 @@ async function provider(id) {
    ${pr.length ? `<div class="card"><h3>Прайс</h3><table><tr><th>Услуга</th><th>Авто</th><th>Цена</th><th></th></tr>${pr.map((x) => `<tr><td>${esc(x.service)}</td><td>${esc([x.brand, x.model].filter(Boolean).join(' ') || 'Все')}</td><td><b>${money(x.price)}</b></td><td><a class="btn sm" href="#/new/sto?to=${p.id}&sub=${encodeURIComponent(x.service)}">Записаться</a></td></tr>`).join('')}</table></div>` : ''}
    <div class="card"><h3>Отзывы</h3>
     ${pub.length ? `<div class="dist">${dist.map(([n, c]) => `<div><span>${n}★</span><i><b style="width:${pub.length ? Math.round(c / pub.length * 100) : 0}%"></b></i><span>${c}</span></div>`).join('')}</div>` : ''}
-    ${pub.map((r) => `<div class="rev"><div>${stars(r.rating)} <span class="small muted">${dt(r.created_at)}</span></div>${r.comment ? `<p data-ugc>${esc(r.comment)}</p>` : ''}
+    ${pub.map((r) => `<div class="rev"><div>${stars(r.rating)} <span class="small muted">${dt(r.created_at)}</span> ${verifiedRev(r)}</div>${r.comment ? `<p data-ugc>${esc(r.comment)}</p>` : ''}
       ${r.reply ? `<div class="reply"><b>Ответ ${esc(p.name)}:</b> <span data-ugc>${esc(r.reply)}</span></div>` : ''}
       <div class="rev-a small">${r.comment ? `<a href="${translateLink(r.comment)}" target="_blank" rel="noopener">${isKK() ? 'Аудару' : 'Перевести'}</a>` : ''}${S.caps.v4 ? `<a href="#/complaint?type=review&id=${r.id}">⚑ Пожаловаться</a>` : ''}</div>
       ${mine && S.caps.v3 ? `<form class="row" data-reply="${r.id}"><input name="t" class="grow" placeholder="Ответить на отзыв" value="${esc(r.reply || '')}"><button class="sm">Ответить</button></form>` : ''}</div>`).join('') || '<p class="muted">Пока нет отзывов. Оценки ставят только клиенты с выполненной заявкой.</p>'}
@@ -301,8 +308,13 @@ async function provider(id) {
 }
 provider.after = (v, id) => {
   const sh = $('#share', v); if (sh) sh.onclick = async () => { const url = `${siteUrl()}#/provider/${id}`; try { if (navigator.share) await navigator.share({ title: 'АвтоМастер24', url }); else { await navigator.clipboard.writeText(url); toast('Ссылка скопирована'); } } catch { /* отмена */ } };
-  $$('[data-reply]', v).forEach((f) => f.onsubmit = (e) => { e.preventDefault(); act($('button', f), () => api.replyReview(+f.dataset.reply, f.t.value), 'Ответ опубликован'); });
+  replyHandlers(v, 'Ответ опубликован');
 };
+function replyHandlers(v, ok) {
+  $$('[data-reply]', v).forEach((f) => f.onsubmit = (e) => { e.preventDefault();
+    if (hasPii(f.t.value) && !confirm('В ответе, похоже, есть телефон, госномер или другие персональные данные клиента. Публиковать их нельзя (п. 3.3 правил). Всё равно отправить?')) return;
+    act($('button', f), () => api.replyReview(+f.dataset.reply, f.t.value), ok); });
+}
 
 // ------------------------------------------------------------ новая заявка
 const dayOpts = () => [...Array(7)].map((_, i) => { const d = new Date(); d.setDate(d.getDate() + i); const iso = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`; return [iso, i === 0 ? 'Сегодня' : i === 1 ? 'Завтра' : d.toLocaleDateString('ru-RU', { weekday: 'short', day: 'numeric' })]; });
@@ -461,9 +473,10 @@ async function request(id) {
   let review = '';
   if (st === 'completed' && r.accepted_by) {
     const mine = await api.myReviewFor(r.id);
-    review = mine ? `<div class="card"><h3>Ваша оценка</h3>${stars(mine.rating)} ${esc(mine.comment)} ${mine.is_published ? '' : '<span class="small muted">(отзыв на модерации)</span>'}${mine.reply ? `<div class="reply"><b>Ответ исполнителя:</b> ${esc(mine.reply)}</div>` : ''}</div>`
+    review = mine ? myReviewCard(mine)
       : `<form class="card" id="revForm"><h3>Оцените исполнителя</h3><div class="rate" role="radiogroup" aria-label="Оценка">${[5, 4, 3, 2, 1].map((n) => `<input type="radio" name="rating" id="rt${n}" value="${n}" ${n === 5 ? 'checked' : ''}><label for="rt${n}" title="${n}">★</label>`).join('')}</div>
-        <label>Отзыв (необязательно) ${tip('Отзыв с текстом публикуется после проверки модератором. Оценка без текста — сразу.')}</label><textarea name="comment" rows="2" placeholder="Что понравилось, что нет"></textarea><button class="p" style="margin-top:10px">Отправить оценку</button></form>`;
+        <label>Отзыв (необязательно) ${tip('Отзыв с текстом публикуется после проверки модератором. Оценка без текста — сразу.')}</label><textarea name="comment" rows="2" placeholder="Что понравилось, что нет"></textarea>
+        <p class="small muted">Пишите о своём опыте. Не указывайте телефоны, госномера и ФИО. Отзыв за скидку, бонус или деньги запрещён. <a href="${legal('reviews')}">Правила отзывов</a></p><button class="p" style="margin-top:10px">Отправить оценку</button></form>`;
   }
   return `<a href="#/requests" class="small">← Мои заявки</a><div class="card"><div class="row between"><h2>${reqTitle(r)}</h2>${badge(st)}</div>${timeline(r)}${reqInfo(r)}</div>${block}
     ${btns.length ? `<div class="card row">${btns.join('')}</div>` : ''}${review}`;
@@ -471,7 +484,10 @@ async function request(id) {
 request.after = (v, id) => {
   $$('[data-offer]', v).forEach((b) => b.onclick = () => act(b, () => api.selectOffer(+b.dataset.offer), 'Предложение выбрано — контакты открыты'));
   $$('[data-a]', v).forEach((b) => b.onclick = () => { if (b.dataset.a === 'cancelRequest' && !confirm('Отменить заявку?')) return; act(b, () => api[b.dataset.a](+id), 'Готово'); });
-  const f = $('#revForm', v); if (f) f.onsubmit = (e) => { e.preventDefault(); const d = formData(f); act($('button', f), () => api.leaveReview(+id, +d.rating, d.comment), 'Спасибо за оценку!'); };
+  const f = $('#revForm', v); if (f) f.onsubmit = (e) => { e.preventDefault(); const d = formData(f);
+    if (hasPii(d.comment) && !confirm('В отзыве, похоже, есть телефон, госномер или другие персональные данные. Такой отзыв не пройдёт модерацию (п. 3.3 правил). Отправить всё равно?')) return;
+    act($('button', f), () => api.leaveReview(+id, +d.rating, d.comment), 'Спасибо за оценку!'); };
+  myReviewAfter(v);
 };
 
 // ------------------------------------------------------------ чат по заявке
@@ -647,8 +663,8 @@ async function cabinet(_, q) {
   }
   if (tab === 'reviews') {
     const revs = await api.providerReviews(p.id);
-    return `${head}<div class="card"><h3>Отзывы о вас</h3><p class="small muted">Отвечайте на отзывы — клиенты видят ответы на вашей странице. Это повышает доверие.</p>
-      ${revs.map((r) => `<div class="rev"><div>${stars(r.rating)} <span class="small muted">${dt(r.created_at)}${r.is_published ? '' : ' · на модерации'}</span></div>${r.comment ? `<p>${esc(r.comment)}</p>` : ''}
+    return `${head}<div class="card"><h3>Отзывы о вас</h3><p class="small muted">Отвечайте на отзывы — клиенты видят ответы на вашей странице. Это повышает доверие. Не раскрывайте в ответе телефон, номер машины и другие данные клиента. Просить отзыв за скидку или бонус запрещено (п. 3.5 правил).</p>
+      ${revs.map((r) => `<div class="rev"><div>${stars(r.rating)} <span class="small muted">${dt(r.created_at)}${r.is_published ? '' : ' · на модерации'}</span> ${verifiedRev(r)}</div>${r.comment ? `<p>${esc(r.comment)}</p>` : ''}
       ${S.caps.v3 ? `<form class="row" data-reply="${r.id}"><input name="t" class="grow" placeholder="Ваш ответ" value="${esc(r.reply || '')}"><button class="sm">${r.reply ? 'Изменить' : 'Ответить'}</button></form>` : ''}</div>`).join('') || '<p class="muted">Отзывов пока нет.</p>'}</div>`;
   }
   if (tab === 'org') {
@@ -715,7 +731,7 @@ cabinet.after = (v, _, q) => {
   $$('[data-assign]', v).forEach((sl) => sl.onchange = () => act(null, () => api.assign(+sl.dataset.assign, sl.value), sl.value ? 'Заявка поручена' : 'Поручение снято'));
   orgSettingsAfter(v, pid);
   const pf = $('#prForm', v); if (pf) pf.onsubmit = (e) => { e.preventDefault(); const d = formData(pf); act($('button', pf), () => api.addPrice({ provider_id: pid, service: d.service, brand: d.brand || '', model: d.model || '', year_from: d.year_from ? +d.year_from : null, year_to: d.year_to ? +d.year_to : null, price: +d.price }), 'Цена добавлена'); };
-  $$('[data-reply]', v).forEach((f) => f.onsubmit = (e) => { e.preventDefault(); act($('button', f), () => api.replyReview(+f.dataset.reply, f.t.value), 'Ответ сохранён'); });
+  replyHandlers(v, 'Ответ сохранён');
   const cur = S.myProv.find((x) => x.id === pid);
   const op = $('#orgPh', v); if (op) op.onchange = () => act(null, async () => {
     const list = [...(cur.photos || [])];
@@ -752,7 +768,15 @@ async function admin(_, q) {
   if (tab === 'reqs') { const r = await api.adminRequests();
     return head + `<div class="card"><table><tr><th>#</th><th>Тип</th><th>Город</th><th>Статус</th><th>Создана</th><th>Сумма</th></tr>${r.map((x) => `<tr><td class="mono">${x.id}</td><td>${reqTitle(x)}</td><td>${esc(x.city)}</td><td>${badge(effStatus(x))}</td><td>${dt(x.created_at)}</td><td>${money(x.final_amount)}</td></tr>`).join('')}</table></div>`; }
   if (tab === 'reviews') { const r = await api.pendingReviews();
-    return head + (r.map((x) => `<div class="card">${stars(x.rating)} <b>${esc(x.provider_name || '')}</b><p>${esc(x.comment)}</p><div class="row"><button class="ok" data-pub="${x.id}">Опубликовать</button><button class="danger" data-rej="${x.id}">Удалить</button></div></div>`).join('') || '<div class="empty">Нет отзывов на модерации</div>'); }
+    if (!S.caps.v10) return head + (r.map((x) => `<div class="card">${stars(x.rating)} <b>${esc(x.provider_name || '')}</b><p>${esc(x.comment)}</p><div class="row"><button class="ok" data-pub="${x.id}">Опубликовать</button><button class="danger" data-rej="${x.id}">Скрыть</button></div></div>`).join('') || '<div class="empty">Нет отзывов на модерации</div>');
+    const hidden = await api.hiddenReviews();
+    const ruleSel = `<select name="rule" aria-label="Пункт правил">${Object.entries(REVIEW_RULES).filter(([k]) => k !== 'hold').map(([k, n]) => `<option value="${k}">${esc(n)}</option>`).join('')}</select>`;
+    return head + `<h3>На модерации: ${r.length}</h3>` + (r.map((x) => { const pii = x.pii_flag || hasPii(x.comment); return `<div class="card">${stars(x.rating)} <b>${esc(x.provider_name || '')}</b> <span class="small muted">${dt(x.created_at)}${x.edited_at ? ' · изменён автором' : ''}</span>
+      ${pii ? '<div class="notice warn small">⚠ Возможны персональные данные — проверьте подсвеченное (п. 3.3)</div>' : ''}<p data-ugc>${markPii(x.comment)}</p>
+      <form class="row" data-rvh="${x.id}"><button type="button" class="ok sm" data-rvp="${x.id}">Опубликовать</button>${ruleSel}<input name="reason" class="grow" placeholder="Пояснение для автора (необязательно)"><button class="danger sm">Скрыть</button></form></div>`; }).join('') || '<div class="empty">Нет отзывов на модерации</div>')
+      + `<h3>Скрытые: ${hidden.length}</h3><p class="small muted">Отрицательные отзывы не скрываем. Скрытый отзыв автор видит с причиной и может обжаловать. Удалить можно только скрытый — после проверки, с основанием (ст. 15 Закона об онлайн-платформах).</p>`
+      + (hidden.map((x) => `<div class="card">${stars(x.rating)} <b>${esc(x.provider_name || '')}</b> <span class="small muted">скрыт ${dt(x.hidden_at)}</span><div class="small"><b>${esc(REVIEW_RULES[x.hidden_rule] || x.hidden_rule || '')}</b>${x.hidden_reason ? ' — ' + esc(x.hidden_reason) : ''}</div><p data-ugc>${markPii(x.comment)}</p>
+      <div class="row"><button class="ok sm" data-rvp="${x.id}">Вернуть (опубликовать)</button><button class="danger sm" data-rvd="${x.id}">Удалить окончательно</button></div></div>`).join('') || '<p class="muted small">Скрытых нет</p>'); }
   if (tab === 'provs') { const p = await api.adminProviders();
     return head + `<div class="card"><table><tr><th>Название</th><th>Тип</th><th>Город</th><th>Рейтинг</th><th></th></tr>${p.map((x) => `<tr><td><a href="#/provider/${x.id}">${esc(x.name)}</a>${x.is_test ? '<span class="test-badge">ТЕСТ</span>' : ''}</td><td>${KINDS[x.kind].short}</td><td>${esc(x.city)}</td><td>${Number(x.rating).toFixed(1)}</td><td class="row"><button class="sm ${x.is_active ? 'danger' : 'ok'}" data-pa="${x.id}:${x.is_active ? 0 : 1}">${x.is_active ? 'Отключить' : 'Включить'}</button>${S.caps.v3 ? `<button class="sm ${x.verified ? '' : 'ok'}" data-pv="${x.id}:${x.verified ? 0 : 1}" title="Отметка «Проверен» — после проверки документов/адреса">${x.verified ? 'Снять ✔' : '✔ Проверен'}</button>` : ''}</td></tr>`).join('')}</table></div>`; }
   if (tab === 'complaints') return head + await adminComplaints();
@@ -765,7 +789,8 @@ admin.after = (v) => {
   $$('[data-ok]', v).forEach((b) => b.onclick = () => act(b, () => api.reviewRegistration(+b.dataset.ok, true), 'Одобрено — организация создана'));
   $$('[data-no]', v).forEach((b) => b.onclick = () => { const r = prompt('Причина отказа'); if (r !== null) act(b, () => api.reviewRegistration(+b.dataset.no, false, r), 'Отклонено'); });
   $$('[data-pub]', v).forEach((b) => b.onclick = () => act(b, () => api.moderateReview(+b.dataset.pub, true), 'Опубликовано'));
-  $$('[data-rej]', v).forEach((b) => b.onclick = () => act(b, () => api.moderateReview(+b.dataset.rej, false), 'Удалено'));
+  $$('[data-rej]', v).forEach((b) => b.onclick = () => act(b, () => api.moderateReview(+b.dataset.rej, false), 'Скрыто'));
+  reviewModerationAfter(v);
   $$('[data-pa]', v).forEach((b) => b.onclick = () => { const [id, on] = b.dataset.pa.split(':'); act(b, () => api.setProviderActive(+id, on === '1'), 'Готово'); });
   $$('[data-pv]', v).forEach((b) => b.onclick = () => { const [id, on] = b.dataset.pv.split(':'); act(b, () => api.setProviderVerified(+id, on === '1'), on === '1' ? 'Отмечен как проверенный' : 'Отметка снята'); });
   $$('[data-ca]', v).forEach((b) => b.onclick = () => { const [id, on] = b.dataset.ca.split(':'); act(b, async () => { await api.setCityActive(+id, on === '1'); S.ref = await api.ref(); }, 'Готово'); });
@@ -849,25 +874,41 @@ function privacyAfter(v) {
 
 async function adminComplaints() {
   const list = await api.adminComplaints();
+  const revIds = S.caps.v10 ? [...new Set(list.filter((c) => c.target_type === 'review' && c.target_id && ['new', 'in_review'].includes(c.status)).map((c) => c.target_id))] : [];
+  const revs = Object.fromEntries(await Promise.all(revIds.map(async (i) => [i, await api.getReview(i).catch(() => null)])));
+  const revBox = (c) => { if (c.target_type !== 'review' || !S.caps.v10 || !(c.target_id in revs)) return ''; const x = revs[c.target_id];
+    if (!x) return '<div class="small muted">Отзыв уже удалён.</div>';
+    const st = x.is_published ? 'опубликован' : x.hidden_at ? `скрыт: ${esc(REVIEW_RULES[x.hidden_rule] || '')}` : 'на модерации';
+    return `<div class="rev small">${stars(x.rating)} <b>${esc(x.provider_name || '')}</b> · ${st}<p data-ugc>${markPii(x.comment)}</p>${x.reply ? `<div class="reply">Ответ: ${esc(x.reply)}</div>` : ''}
+      <div class="row">${x.hidden_rule !== 'hold' ? `<button class="sm" data-rvhold="${x.id}" data-c="${c.id}">⏸ Скрыть на время проверки</button>` : ''}${!x.is_published ? `<button class="ok sm" data-rvp="${x.id}">Вернуть</button>` : ''}${x.hidden_at ? `<button class="danger sm" data-rvd="${x.id}">Удалить (подтверждено)</button>` : ''}</div></div>`; };
   const open = list.filter((c) => ['new', 'in_review'].includes(c.status));
   const row = (c) => { const late = ['new', 'in_review'].includes(c.status) && new Date(c.due_at) < new Date();
     const link = c.target_id ? ({ review: '', provider: `#/provider/${c.target_id}`, message: `#/chat/${c.target_id}`, request: '' }[c.target_type] || '') : '';
     return `<div class="card"><div class="row between"><b>№ ${c.id} · ${esc(CTYPES[c.target_type] || c.target_type)}${c.target_id ? ` #${esc(c.target_id)}` : ''}</b>${cbadge(c.status)}</div>
     <div class="small ${late ? 'err-t' : 'muted'}">${dt(c.created_at)} · ответить до ${dOnly(c.due_at)}${late ? ' · ПРОСРОЧЕНО' : ''} · ${c.lang === 'kk' ? 'қазақша' : 'русский'}${link ? ` · <a href="${link}">открыть</a>` : ''}</div>
-    <div class="small"><b>${esc(c.reason || '')}</b> ${c.contact ? `· контакт: ${esc(c.contact)}` : c.user_id ? '· пользователь сайта' : ''}</div><p data-ugc>${esc(c.body)}</p>
+    <div class="small"><b>${esc(c.reason || '')}</b> ${c.contact ? `· контакт: ${esc(c.contact)}` : c.user_id ? '· пользователь сайта' : ''}</div><p data-ugc>${esc(c.body)}</p>${revBox(c)}
     <form class="row" data-ans="${c.id}"><select name="status">${Object.entries(CSTATUS).filter(([k]) => k !== 'new').map(([k, [x]]) => `<option value="${k}" ${c.status === k ? 'selected' : ''}>${x}</option>`).join('')}</select>
     <input name="answer" class="grow" placeholder="Мотивированный ответ (обязателен для «Решено/Отклонено»)" value="${esc(c.answer || '')}"><button class="sm p">Сохранить</button></form></div>`; };
   return `<p class="small muted">Открытых: ${open.length}. Срок ответа — 20 календарных дней. Отзывы скрываются во вкладке «Отзывы», исполнители — в «Исполнители».</p>${list.map(row).join('') || '<div class="empty">Обращений нет</div>'}`;
 }
 
+// годовой отчёт по ст. 13 п. 2 Закона об онлайн-платформах: риски, меры, модерация
+function annualReport(d) {
+  const by = d.reviews_hidden_by_rule || {}; const rows = Object.entries(by).sort((a, b) => b[1] - a[1]);
+  return `<div class="card"><h3>${L('Отчёт за год (ст. 13 Закона об онлайн-платформах)', 'Жылдық есеп (Онлайн-платформалар туралы заңның 13-бабы)')}</h3>
+    <div class="stats"><div><b>${d.complaints_reviews ?? 0}</b><small>жалоб на отзывы</small></div><div><b>${d.reviews_deleted_by_moderator ?? 0}</b><small>удалено после проверки</small></div><div><b>${d.reviews_restored ?? 0}</b><small>опубликовано модератором / возвращено</small></div><div><b>${d.reviews_pii_flagged ?? 0}</b><small>с отметкой «возможны ПД»</small></div></div>
+    <h4>Скрыто отзывов по пунктам правил</h4>${rows.length ? `<table>${rows.map(([k, c]) => `<tr><td>${esc(REVIEW_RULES[k] || k)}</td><td><b>${c}</b></td></tr>`).join('')}</table>` : '<p class="small muted">Скрытий не было.</p>'}
+    <h4>Выявленные риски</h4><ul class="small"><li>Накрутка рейтинга: отзывы от владельца, сотрудников, знакомых или за вознаграждение.</li><li>Ложные сведения, порочащие исполнителя или клиента.</li><li>Раскрытие персональных данных (телефоны, госномера) в отзывах и ответах.</li><li>Оскорбления и противоправный контент.</li></ul>
+    <h4>Принятые меры</h4><ul class="small"><li>Отзыв — только по выполненной заявке, один на заявку; владелец и сотрудники не могут оценивать свою организацию.</li><li>Рейтинг считается только по опубликованным отзывам; отзывы с текстом проверяет модератор, в том числе на казахском языке.</li><li>Автоматическая подсветка возможных персональных данных для модератора и предупреждение автору.</li><li>Скрытие — с пунктом правил и причиной; удаление — только после проверки; все решения в журнале; автор может обжаловать, исправить (30 дней) или удалить свой отзыв.</li><li>Жалоба на любой отзыв — с номером сразу и мотивированным ответом до 20 дней.</li></ul></div>`;
+}
 async function transparency() {
   let d = null; try { d = S.caps.v4 ? await api.transparency() : null; } catch { d = null; }
   const n = (x) => (x ?? '—');
   return `<h1>📊 ${L('Прозрачность', 'Ашықтық')}</h1><div class="card"><p>${L('Сведения публикуются по ст. 9 и 13 Закона РК «Об онлайн-платформах и онлайн-рекламе». Счётчик не использует cookies и не хранит IP-адреса: учитывается одно посещение браузера в сутки.', 'Мәліметтер «Онлайн-платформалар және онлайн-жарнама туралы» ҚР Заңының 9 және 13-баптары бойынша жарияланады. Есептегіш cookies пайдаланбайды және IP-мекенжайларды сақтамайды: браузердің тәулігіне бір кіруі есепке алынады.')}</p></div>
     ${d ? `<div class="card"><h3>Пользователи в Казахстане</h3><table><tr><th>Месяц</th><th>Посещений</th><th>В среднем в сутки</th></tr>${(d.monthly || []).map((m) => `<tr><td>${esc(m.month)}</td><td>${n(m.visitors)}</td><td>${n(m.avg_daily)}</td></tr>`).join('') || '<tr><td colspan="3" class="muted">Данные накапливаются</td></tr>'}</table>
       <p class="small muted">${L('Зарегистрировано пользователей', 'Тіркелген пайдаланушылар')}: <b>${n(d.registered_users)}</b> · ${L('активных исполнителей', 'белсенді орындаушылар')}: <b>${n(d.providers_active)}</b></p></div>
-      <div class="card"><h3>Модерация и обращения за 12 месяцев</h3><div class="stats"><div><b>${n(d.complaints_total)}</b><small>обращений</small></div><div><b>${n(d.complaints_resolved)}</b><small>рассмотрено</small></div><div><b>${n(d.complaints_overdue)}</b><small>просрочено</small></div><div><b>${n(d.reviews_published)}</b><small>отзывов опубликовано</small></div><div><b>${n(d.reviews_hidden)}</b><small>на модерации / скрыто</small></div></div>
-      <p class="small muted">${L('Сформировано автоматически', 'Автоматты түрде жасалды')}: ${dt(d.generated_at)}.</p></div>` : '<div class="card muted">Отчёт появится после подключения обновления базы.</div>'}
+      <div class="card"><h3>Модерация и обращения за 12 месяцев</h3><div class="stats"><div><b>${n(d.complaints_total)}</b><small>обращений</small></div><div><b>${n(d.complaints_resolved)}</b><small>рассмотрено</small></div><div><b>${n(d.complaints_overdue)}</b><small>просрочено</small></div><div><b>${n(d.reviews_published)}</b><small>отзывов опубликовано</small></div>${'reviews_pending' in d ? `<div><b>${n(d.reviews_pending)}</b><small>на модерации</small></div><div><b>${n(d.reviews_hidden)}</b><small>скрыто</small></div>` : `<div><b>${n(d.reviews_hidden)}</b><small>на модерации / скрыто</small></div>`}</div>
+      <p class="small muted">${L('Сформировано автоматически', 'Автоматты түрде жасалды')}: ${dt(d.generated_at)}.</p></div>${d.reviews_hidden_by_rule ? annualReport(d) : ''}` : '<div class="card muted">Отчёт появится после подключения обновления базы.</div>'}
     <div class="card small"><a href="${legal('terms')}">Пользовательское соглашение</a> · <a href="${legal('reviews')}">Правила модерации</a> · <a href="#/complaint">Подать обращение</a></div>`;
 }
 
@@ -889,6 +930,32 @@ function countVisit() {
   const day = new Date().toISOString().slice(0, 10);
   if (localStorage.getItem('am24-hit') === day || !S.caps.v4) return;
   localStorage.setItem('am24-hit', day); api.hit().catch(() => {});
+}
+
+// ------------------------------------------------------------ отзывы (Обновление 7)
+function myReviewCard(m) {
+  const status = m.is_published ? '<span class="badge green">опубликован</span>'
+    : m.hidden_at ? `<span class="badge red">скрыт модератором</span>` : '<span class="badge grey">на модерации</span>';
+  const canEdit = S.caps.v10 && Date.now() - new Date(m.created_at) < 30 * 864e5 && m.hidden_rule !== 'hold';
+  return `<div class="card" id="myRev"><div class="row between"><h3>Ваша оценка</h3>${status}</div>${stars(m.rating)} <span data-ugc>${esc(m.comment)}</span>${m.edited_at ? ' <span class="small muted">· изменён</span>' : ''}
+    ${m.hidden_at ? `<div class="notice warn small">Отзыв скрыт: <b>${esc(REVIEW_RULES[m.hidden_rule] || m.hidden_rule || '')}</b>${m.hidden_reason ? ` — <span data-ugc>${esc(m.hidden_reason)}</span>` : ''}. ${m.hidden_rule === 'hold' ? 'Идёт проверка жалобы, решение — до 20 дней.' : 'Исправьте текст или обжалуйте решение.'} <a href="#/complaint?type=appeal&id=${m.id}">Обжаловать</a></div>` : ''}
+    ${m.reply ? `<div class="reply"><b>Ответ исполнителя:</b> ${esc(m.reply)}</div>` : ''}
+    ${S.caps.v10 ? `<div class="row" style="margin-top:8px">${canEdit ? '<button class="sm" data-rev-edit>✏ Исправить</button>' : ''}<button class="sm danger" data-rev-del="${m.id}">Удалить отзыв</button></div>
+    ${canEdit ? `<form id="revEdit" hidden><div class="rate" role="radiogroup" aria-label="Оценка">${[5, 4, 3, 2, 1].map((n) => `<input type="radio" name="rating" id="re${n}" value="${n}" ${n === m.rating ? 'checked' : ''}><label for="re${n}" title="${n}">★</label>`).join('')}</div>
+      <textarea name="comment" rows="2">${esc(m.comment || '')}</textarea><p class="small muted">Исправленный текст снова проверит модератор. Исправить можно в течение 30 дней.</p><input type="hidden" name="id" value="${m.id}"><button class="p sm">Сохранить</button></form>` : ''}` : ''}</div>`;
+}
+function myReviewAfter(v) {
+  const e = $('[data-rev-edit]', v), f = $('#revEdit', v); if (e && f) e.onclick = () => { f.hidden = !f.hidden; };
+  if (f) f.onsubmit = (ev) => { ev.preventDefault(); const d = formData(f);
+    if (hasPii(d.comment) && !confirm('В отзыве, похоже, есть персональные данные (п. 3.3 правил). Сохранить всё равно?')) return;
+    act($('button', f), () => api.editMyReview(+d.id, +d.rating, d.comment), d.comment.trim() ? 'Сохранено — отзыв на модерации' : 'Оценка сохранена'); };
+  const del = $('[data-rev-del]', v); if (del) del.onclick = () => { if (confirm('Удалить ваш отзыв? Оценка перестанет учитываться в рейтинге.')) act(del, () => api.deleteMyReview(+del.dataset.revDel), 'Отзыв удалён'); };
+}
+function reviewModerationAfter(v) {
+  $$('[data-rvp]', v).forEach((b) => b.onclick = () => act(b, () => api.reviewDecide(+b.dataset.rvp, 'publish'), 'Опубликовано'));
+  $$('form[data-rvh]', v).forEach((f) => f.onsubmit = (e) => { e.preventDefault(); const d = formData(f); act($('button.danger', f), () => api.reviewDecide(+f.dataset.rvh, 'hide', d.rule, d.reason), 'Скрыто, автор увидит причину'); });
+  $$('[data-rvhold]', v).forEach((b) => b.onclick = () => act(b, () => api.reviewDecide(+b.dataset.rvhold, 'hold', 'hold', `Жалоба №${b.dataset.c}`), 'Скрыт на время проверки'));
+  $$('[data-rvd]', v).forEach((b) => b.onclick = () => { const r = prompt('Основание удаления (например: «Подтверждено: ложные сведения, жалоба №…»):'); if (r && r.trim()) act(b, () => api.reviewDecide(+b.dataset.rvd, 'delete', null, r.trim()), 'Отзыв удалён'); });
 }
 
 // ------------------------------------------------------------ роли и права (Обновление 6)
@@ -969,12 +1036,13 @@ async function adminSettingsTab(q) {
       <p class="small muted">Пустое поле — значение ${city ? 'из общих настроек' : 'по умолчанию'}. Изменения записываются в журнал.</p><button class="p">Сохранить</button></form>
     ${G ? '<div class="card small">Города включаются и выключаются во вкладке <a href="#/admin?t=cities">🏙 Города</a>.</div>' : ''}`;
 }
-const ACT_N = { role: 'Роль', block: 'Блокировка', unblock: 'Разблокировка', setting: 'Настройка', staff_add: 'Сотрудник добавлен', staff_remove: 'Сотрудник удалён', provider: 'Организация', registration: 'Регистрация бизнеса' };
+const ACT_N = { review: 'Отзыв', role: 'Роль', block: 'Блокировка', unblock: 'Разблокировка', setting: 'Настройка', staff_add: 'Сотрудник добавлен', staff_remove: 'Сотрудник удалён', provider: 'Организация', registration: 'Регистрация бизнеса' };
 const logDetails = (x) => { const d = x.details || {};
   if (x.action === 'role') return `${ROLE_N[d.from] || d.from} → ${ROLE_N[d.to] || d.to}${d.city ? ' (' + esc(d.city) + ')' : ''}`;
   if (x.action === 'setting') return `${esc(d.key)} = ${esc(d.value == null ? 'по умолчанию' : typeof d.value === 'string' ? d.value.slice(0, 60) : d.value)}`;
   if (x.action === 'provider') return `${esc(d.name || '')}: ${d.is_active ? 'активна' : 'отключена'}${d.verified ? ', ✔ проверена' : ''}`;
   if (x.action === 'registration') return `${esc(d.name || '')}: ${esc(d.status || '')}${d.reason ? ' — ' + esc(d.reason) : ''}`;
+  if (x.action === 'review') return `№${esc(d.review)}: ${{ publish: 'опубликован', hide: 'скрыт', hold: 'скрыт на проверку', delete: 'удалён' }[d.action] || esc(d.action)}${d.rule ? ' · ' + esc(REVIEW_RULES[d.rule] || d.rule) : ''}${d.reason ? ' — ' + esc(d.reason) : ''}`;
   if (x.action.startsWith('staff')) return `организация №${esc(d.provider)}${d.role ? ', ' + (STAFF_N[d.role] || d.role) : ''}`;
   return esc(d.reason || ''); };
 const logRows = (log) => log.length ? `<div class="tblwrap"><table><tr><th>Когда</th><th>Кто</th><th>Действие</th><th>Кому</th><th>Подробности</th></tr>${log.map((x) => `<tr><td class="small">${dt(x.created_at)}</td><td class="small">${x.actor ? userLine(x.actor) : '—'}</td><td>${ACT_N[x.action] || esc(x.action)}${x.city ? `<div class="small muted">${esc(x.city)}</div>` : ''}</td><td class="small">${x.target ? userLine(x.target) : '—'}</td><td class="small">${logDetails(x)}</td></tr>`).join('')}</table></div>` : '<p class="muted small">Записей пока нет</p>';

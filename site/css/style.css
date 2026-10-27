@@ -155,3 +155,6 @@ table.matrix{font-size:13px;min-width:640px}table.matrix td:not(:first-child),ta
 .team{margin-top:8px;display:flex;flex-wrap:wrap;gap:10px;align-items:center}.team select{width:auto;padding:4px 8px}
 label.inline{display:inline-flex;gap:6px;align-items:center;margin:0}
 label.check{display:flex;gap:8px;align-items:flex-start;margin:8px 0}label.check input{width:auto;margin-top:3px}
+/* Обновление 7: отзывы */
+.vrev{font-size:12px;color:var(--ok,#3bb273);white-space:nowrap}
+mark.pii{background:#ffb4a8;color:#3a0b00;border-radius:3px;padding:0 2px}
